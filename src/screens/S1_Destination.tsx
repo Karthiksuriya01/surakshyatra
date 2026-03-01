@@ -10,6 +10,7 @@ interface Suggestion {
     secondary: string;
     emoji: string;
 }
+///jghg
 
 interface Props {
     onNext: (dest: { placeId: string; main: string; secondary: string; emoji: string }) => void;

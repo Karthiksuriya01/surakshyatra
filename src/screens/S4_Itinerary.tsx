@@ -4,17 +4,21 @@ import { generateItinerary, sc } from "../utils/helpers";
 import type { DayItinerary } from "../utils/helpers";
 import type { Destination, Place } from "../constants/data";
 import type { SourcePlace } from "./S0_Source";
+import type { GroupSize } from "./S2b_GroupDuration";
 
 interface Props {
     dest: Destination;
     prefs: string[];
     days: number;
+    groupSize?: GroupSize;
     source?: SourcePlace | null;
     onPlace: (place: Place) => void;
     onBack: () => void;
 }
 
-export default function S4_Itinerary({ dest, prefs, days, source, onPlace, onBack }: Props) {
+const GROUP_EMOJI: Record<string, string> = { solo: "🧍", couple: "👫", family: "👨‍👩‍👧‍👦", friends: "👯" };
+
+export default function S4_Itinerary({ dest, prefs, days, groupSize, source, onPlace, onBack }: Props) {
     const [activeDay, setActiveDay] = useState(1);
     const [loading, setLoading] = useState(true);
     const [itinerary, setItinerary] = useState<DayItinerary[]>([]);
@@ -71,6 +75,7 @@ export default function S4_Itinerary({ dest, prefs, days, source, onPlace, onBac
                         { icon: "📍", val: `${days * 3}+`, lbl: "Places" },
                         { icon: "🛡️", val: "84", lbl: "Avg Safety" },
                         { icon: "📅", val: `${days}`, lbl: "Days" },
+                        { icon: GROUP_EMOJI[groupSize ?? "solo"] ?? "🧍", val: groupSize ? groupSize.charAt(0).toUpperCase() + groupSize.slice(1) : "Solo", lbl: "Group" },
                     ].map((s, i) => (
                         <div key={i} style={{ flex: 1, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 14, padding: "12px", textAlign: "center" }}>
                             <div style={{ fontSize: 18, marginBottom: 4 }}>{s.icon}</div>
