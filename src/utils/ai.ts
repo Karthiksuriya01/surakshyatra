@@ -17,7 +17,7 @@ export async function callAI(messages: AIMessage[]): Promise<string> {
         headers: {
             Authorization: `Bearer ${OPENROUTER_API_KEY}`,
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://surakshyatra.app",
+            "HTTP-Referer": typeof window !== "undefined" ? window.location.origin : "https://surakshyatra.vercel.app",
             "X-Title": "SurakshYatra Trip Planner",
         },
         body: JSON.stringify({
