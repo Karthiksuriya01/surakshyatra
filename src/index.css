@@ -1,0 +1,20 @@
+/* All app-level styles are injected dynamically by the Wrap component
+   via src/styles/global.ts so that shared keyframes & utility classes
+   are available on every screen without CSS-module scoping.
+   This file only provides the bare minimum needed before JS loads. */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  background: #0a0a0f;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
