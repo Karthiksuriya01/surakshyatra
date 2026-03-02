@@ -7,6 +7,7 @@ import {
     generatePlaceInsights,
     generateChatResponse,
     resolveActivityCoords,
+    generateSingleActivity,
 } from "../services/ai";
 import type { TripPlan, ItineraryDay, Activity, PlaceDetails, ChatMessage } from "../types/trip";
 import type { Destination } from "../constants/data";
@@ -223,7 +224,16 @@ function PlaceSheet({ activity, destination, onClose }: PlaceSheetProps) {
                                 <div className="skeleton" style={{ height: 13, width: "75%" }} />
                             </div>
                         ) : (
-                            <p style={{ color: "rgba(255,255,255,0.72)", fontSize: 13, lineHeight: 1.8 }}>{insights}</p>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                                {insights.split("\n").filter(l => l.trim()).map((line, i) => (
+                                    <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                                        <span style={{ color: "#c084fc", fontSize: 14, flexShrink: 0, lineHeight: 1.6 }}>•</span>
+                                        <span style={{ color: "rgba(255,255,255,0.72)", fontSize: 13, lineHeight: 1.7 }}>
+                                            {line.replace(/^[•\-*]\s*/, "")}
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
                         )}
                     </div>
 
@@ -605,13 +615,32 @@ Itinerary: ${tripPlan.itinerary.map((d) =>
                         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                             {activeDayData.activities.map((activity, i) => (
                                 <ActivityCard
-                                    key={i}
+                                    key={`${activeDay}-${i}`}
                                     index={i}
                                     activity={activity}
+                                    destination={dest.main}
                                     onClick={() => setSelectedActivity(activity)}
                                 />
                             ))}
                         </div>
+
+                        {/* ── Add a place ── */}
+                        <AddPlaceButton
+                            destination={dest.main}
+                            onAdd={(newActivity) => {
+                                setTripPlan((prev) => {
+                                    if (!prev) return prev;
+                                    return {
+                                        ...prev,
+                                        itinerary: prev.itinerary.map((d) =>
+                                            d.day === activeDay
+                                                ? { ...d, activities: [...d.activities, newActivity] }
+                                                : d
+                                        ),
+                                    };
+                                });
+                            }}
+                        />
                     </>
                 )}
 
@@ -647,8 +676,35 @@ Itinerary: ${tripPlan.itinerary.map((d) =>
 
 // ── Activity Card ─────────────────────────────────────────────────────────────
 
-function ActivityCard({ activity, index, onClick }: { activity: Activity; index: number; onClick: () => void }) {
-    const [imgError, setImgError] = useState(false);
+function ActivityCard({
+    activity, index, destination = "", onClick
+}: {
+    activity: Activity;
+    index: number;
+    destination?: string;
+    onClick: () => void;
+}) {
+    const [cardPhoto, setCardPhoto] = useState<string>("");
+    const [photoLoaded, setPhotoLoaded] = useState(false);
+
+    // Eagerly fetch a small thumbnail from Places API (or fall back to AI url)
+    useEffect(() => {
+        let cancelled = false;
+        if (activity.place_image_url) {
+            setCardPhoto(activity.place_image_url);
+            return;
+        }
+        const dest = destination || activity.place_address;
+        fetchPlaceDetails(activity.place_name, activity.place_address, dest)
+            .then((d) => {
+                if (cancelled) return;
+                if (d?.photos?.[0]) {
+                    setCardPhoto(getPlacePhotoUrl(d.photos[0].name, 200));
+                }
+            })
+            .catch(() => { });
+        return () => { cancelled = true; };
+    }, [activity.place_name]);
 
     return (
         <div className="activity-card" style={{ animationDelay: `${index * 0.08}s` }} onClick={onClick}>
@@ -657,13 +713,22 @@ function ActivityCard({ activity, index, onClick }: { activity: Activity; index:
                 {index + 1}
             </div>
 
-            {/* Thumbnail */}
-            {activity.place_image_url && !imgError ? (
-                <img className="activity-img" src={activity.place_image_url} alt={activity.place_name}
-                    onError={() => setImgError(true)} />
-            ) : (
-                <div className="activity-img-placeholder">📍</div>
-            )}
+            {/* Thumbnail — real photo or placeholder */}
+            <div className="activity-img-placeholder" style={{ position: "relative", overflow: "hidden", background: cardPhoto ? "transparent" : undefined }}>
+                {cardPhoto ? (
+                    <img
+                        src={cardPhoto}
+                        alt={activity.place_name}
+                        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", borderRadius: 14, opacity: photoLoaded ? 1 : 0, transition: "opacity 0.3s" }}
+                        onLoad={() => setPhotoLoaded(true)}
+                        onError={() => { setCardPhoto(""); }}
+                    />
+                ) : null}
+                {/* Show placeholder emoji until photo loads */}
+                {(!cardPhoto || !photoLoaded) && (
+                    <span style={{ fontSize: 26 }}>📍</span>
+                )}
+            </div>
 
             {/* Content */}
             <div style={{ flex: 1, minWidth: 0 }}>
@@ -684,5 +749,86 @@ function ActivityCard({ activity, index, onClick }: { activity: Activity; index:
                 </div>
             </div>
         </div>
+    );
+}
+
+// ── Add a Place Button + Modal ────────────────────────────────────────────────
+
+function AddPlaceButton({
+    destination,
+    onAdd,
+}: {
+    destination: string;
+    onAdd: (a: Activity) => void;
+}) {
+    const [open, setOpen] = useState(false);
+    const [query, setQuery] = useState("");
+    const [generating, setGenerating] = useState(false);
+    const inputRef = useRef<HTMLInputElement>(null);
+
+    const handleAdd = async () => {
+        const q = query.trim();
+        if (!q || generating) return;
+        setGenerating(true);
+        try {
+            const activity = await generateSingleActivity(q, destination);
+            onAdd(activity);
+            setQuery("");
+            setOpen(false);
+        } catch {
+            // fallback handled inside generateSingleActivity
+        } finally {
+            setGenerating(false);
+        }
+    };
+
+    useEffect(() => {
+        if (open) setTimeout(() => inputRef.current?.focus(), 80);
+    }, [open]);
+
+    return (
+        <>
+            <button
+                onClick={() => setOpen(true)}
+                style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%", marginTop: 8, padding: "13px", background: "rgba(124,58,237,0.07)", border: "1.5px dashed rgba(124,58,237,0.35)", borderRadius: 16, color: "rgba(192,132,252,0.8)", fontSize: 14, fontWeight: 500, cursor: "pointer", fontFamily: "'DM Sans',sans-serif", transition: "all 0.18s" }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(124,58,237,0.14)")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "rgba(124,58,237,0.07)")}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
+                Add a place to this day
+            </button>
+
+            {open && (
+                <div className="place-sheet-overlay" onClick={() => setOpen(false)}>
+                    <div style={{ width: "100%", maxWidth: 500, background: "#16161e", borderRadius: "24px 24px 0 0", padding: "24px 20px 36px", border: "1px solid rgba(255,255,255,0.08)", animation: "slideUp 0.3s cubic-bezier(0.16,1,0.3,1) both" }}
+                        onClick={(e) => e.stopPropagation()}>
+                        <div style={{ width: 36, height: 4, borderRadius: 99, background: "rgba(255,255,255,0.15)", margin: "0 auto 20px" }} />
+                        <h3 style={{ color: "#fff", fontSize: 17, fontWeight: 700, marginBottom: 6 }}>Add a Place</h3>
+                        <p style={{ color: "rgba(255,255,255,0.4)", fontSize: 13, marginBottom: 18 }}>Type any place name in {destination} — AI will fill in the details.</p>
+                        <div style={{ display: "flex", gap: 10 }}>
+                            <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 10, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 14, padding: "0 14px" }}>
+                                <span style={{ fontSize: 16 }}>🔍</span>
+                                <input
+                                    ref={inputRef}
+                                    className="sy-input"
+                                    style={{ fontSize: 14, padding: "12px 0" }}
+                                    placeholder={`e.g. Charminar, ${destination}`}
+                                    value={query}
+                                    onChange={(e) => setQuery(e.target.value)}
+                                    onKeyDown={(e) => e.key === "Enter" && handleAdd()}
+                                />
+                            </div>
+                            <button
+                                onClick={handleAdd}
+                                disabled={generating || !query.trim()}
+                                style={{ padding: "12px 18px", background: generating ? "rgba(124,58,237,0.4)" : "linear-gradient(135deg,#7c3aed,#6d28d9)", border: "none", borderRadius: 14, color: "#fff", fontFamily: "'DM Sans',sans-serif", fontWeight: 600, fontSize: 14, cursor: generating || !query.trim() ? "not-allowed" : "pointer", opacity: !query.trim() ? 0.5 : 1, display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap", transition: "all 0.18s" }}>
+                                {generating ? (
+                                    <><div style={{ width: 14, height: 14, borderRadius: "50%", border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", animation: "spin 0.8s linear infinite" }} />Adding…</>
+                                ) : "✚ Add"}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </>
     );
 }

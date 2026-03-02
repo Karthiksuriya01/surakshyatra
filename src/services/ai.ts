@@ -203,14 +203,14 @@ ${TRIP_PLAN_SCHEMA}`;
 
 function buildFallbackPlan(dest: string, origin: string, days: number, group: string, budget: string): TripPlan {
     const samplePlaces = [
-        { name: "City Centre Market", details: "A bustling local market showcasing the best street food, crafts, and culture of " + dest + ".", address: "City Centre, " + dest, pricing: "Free entry", time: "2–3 hours", best: "Morning", lat: 0, lng: 0 },
-        { name: "National Museum", details: "Explore centuries of history and art at this world-class museum in the heart of " + dest + ".", address: "Museum District, " + dest, pricing: "$5–15", time: "2 hours", best: "10 AM–12 PM", lat: 0, lng: 0 },
-        { name: "Historic Old Town", details: "Walk through charming cobblestoned streets lined with heritage buildings and local cafes.", address: "Old Town, " + dest, pricing: "Free", time: "1–2 hours", best: "Afternoon", lat: 0, lng: 0 },
-        { name: "Scenic Viewpoint", details: "Catch breathtaking panoramic views of " + dest + " from this popular hilltop overlooking the city.", address: "Hillside Park, " + dest, pricing: "Free", time: "1 hour", best: "Sunrise / Sunset", lat: 0, lng: 0 },
-        { name: "Local Food Street", details: "Savour authentic local cuisine at this famous food street packed with vendors and restaurants.", address: "Food Street, " + dest, pricing: "$2–10 per dish", time: "1.5 hours", best: "Evening", lat: 0, lng: 0 },
-        { name: "Heritage Temple / Landmark", details: "A spiritual and architectural gem that embodies the cultural soul of " + dest + ".", address: "Heritage Zone, " + dest, pricing: "Free–$3", time: "1.5 hours", best: "Morning", lat: 0, lng: 0 },
-        { name: "Night Market", details: "Experience the vibrant nightlife of " + dest + " with street food, souvenirs, and local performers.", address: "Night Market, " + dest, pricing: "Free entry", time: "2 hours", best: "7–10 PM", lat: 0, lng: 0 },
-        { name: "Botanical Garden", details: "A peaceful retreat with exotic plants and manicured gardens — perfect for a relaxing afternoon.", address: "Garden District, " + dest, pricing: "$2–8", time: "1.5 hours", best: "Late morning", lat: 0, lng: 0 },
+        { name: "City Centre Market", details: `A bustling local market showcasing the best street food, crafts, and culture of ${dest}.`, address: `City Centre, ${dest}`, pricing: "Free entry", time: "2–3 hours", best: "Morning" },
+        { name: "National Museum", details: `Explore centuries of history and art at this world-class museum in the heart of ${dest}.`, address: `Museum District, ${dest}`, pricing: "$5–15", time: "2 hours", best: "10 AM–12 PM" },
+        { name: "Historic Old Town", details: "Walk through charming cobblestoned streets lined with heritage buildings and local cafes.", address: `Old Town, ${dest}`, pricing: "Free", time: "1–2 hours", best: "Afternoon" },
+        { name: "Scenic Viewpoint", details: `Breathtaking panoramic views of ${dest} from this popular hilltop.`, address: `Hillside Park, ${dest}`, pricing: "Free", time: "1 hour", best: "Sunrise / Sunset" },
+        { name: "Local Food Street", details: "Savour authentic local cuisine at this famous food street packed with vendors and restaurants.", address: `Food Street, ${dest}`, pricing: "$2–10 per dish", time: "1.5 hours", best: "Evening" },
+        { name: "Heritage Landmark", details: `A spiritual and architectural gem that embodies the cultural soul of ${dest}.`, address: `Heritage Zone, ${dest}`, pricing: "Free–$3", time: "1.5 hours", best: "Morning" },
+        { name: "Night Market", details: `Experience the vibrant nightlife of ${dest} with street food, souvenirs, and local performers.`, address: `Night Market, ${dest}`, pricing: "Free entry", time: "2 hours", best: "7–10 PM" },
+        { name: "Botanical Garden", details: "A peaceful retreat with exotic plants and manicured gardens.", address: `Garden District, ${dest}`, pricing: "$2–8", time: "1.5 hours", best: "Late morning" },
     ];
 
     const itinerary = Array.from({ length: days }, (_, d) => ({
@@ -223,7 +223,7 @@ function buildFallbackPlan(dest: string, origin: string, days: number, group: st
                 place_name: p.name,
                 place_details: p.details,
                 place_image_url: "",
-                geo_coordinates: { latitude: p.lat, longitude: p.lng },
+                geo_coordinates: { latitude: 0, longitude: 0 },
                 place_address: p.address,
                 ticket_pricing: p.pricing,
                 time_travel_each_location: p.time,
@@ -232,21 +232,14 @@ function buildFallbackPlan(dest: string, origin: string, days: number, group: st
         }),
     }));
 
-    return {
-        destination: dest,
-        duration: `${days} days`,
-        origin,
-        budget,
-        group_size: group,
-        itinerary,
-    };
+    return { destination: dest, duration: `${days} days`, origin, budget, group_size: group, itinerary };
 }
 
 // ── Places API (New) — place search + review summary ─────────────────────────
 
 /**
- * Search for a place by name + address context using Places Text Search (New).
- * Returns the place ID and a review summary if available.
+ * Search for a place by name using Places Text Search (New).
+ * Returns place ID, review summary, photos, hours, rating etc.
  */
 export async function fetchPlaceDetails(
     placeName: string,
@@ -309,9 +302,9 @@ export function getPlacePhotoUrl(photoName: string, maxWidth = 600): string {
     return `https://places.googleapis.com/v1/${photoName}/media?maxWidthPx=${maxWidth}&key=${MAPS_API_KEY}`;
 }
 
-// ── AI traveller insights for a specific place ────────────────────────────────
+// ── AI traveller insights (bullet points) ────────────────────────────────────
 
-const INSIGHTS_SYSTEM = `You are a knowledgeable travel guide specialising in safety, culture and practical tips. Given a place name and its basic details, provide a brief, practical insights paragraph for a traveller visiting this place for the first time. Focus on: what to expect, local tips, safety considerations, best photo spots, what to eat nearby, and any cultural etiquette. Keep it to 3-4 sentences. Return only the paragraph text, no headings or bullet points.`;
+const INSIGHTS_SYSTEM = `You are a knowledgeable travel guide specialising in safety, culture and practical tips. Given a place name and its details, return exactly 4-5 concise bullet points for a first-time traveller. Cover: what to expect, local tips, safety considerations, best photo spots or timing, and cultural etiquette. Format each bullet EXACTLY like: "• [tip]" — one per line. No headings, no extra text, just the bullet lines.`;
 
 export async function generatePlaceInsights(
     placeName: string,
@@ -331,13 +324,13 @@ export async function generatePlaceInsights(
         sessionStorage.setItem(cacheKey, text);
         return text;
     } catch {
-        return "This is a must-visit destination. Check local opening hours before visiting, carry cash for small vendors nearby, and always keep your belongings secure in crowded areas.";
+        return "• Great place for first-time visitors — arrive early to avoid crowds.\n• Carry small cash for entry fees and nearby vendors.\n• Respect local customs and dress codes at religious or heritage sites.\n• Best photos in the morning or golden hour near sunset.\n• Keep your belongings secure in busy tourist areas.";
     }
 }
 
 // ── Chat assistant ────────────────────────────────────────────────────────────
 
-const CHAT_SYSTEM = `You are SurakshYatra, an expert AI travel safety guide and trip planner. You have access to the user's current trip context below. Answer the user's questions about their trip, local safety, weather, cultural tips, nearby attractions, food, transport, or anything else travel-related. Be concise, helpful and friendly. If asked about safety, give practical, honest advice. If you don't know something specific, give general guidance for the destination.`;
+const CHAT_SYSTEM = `You are SurakshYatra, an expert AI travel safety guide and trip planner. You have access to the user's current trip context below. Answer the user's questions about their trip, local safety, weather, cultural tips, nearby attractions, food, transport, or anything else travel-related. Be concise, helpful and friendly. If asked about safety, give practical, honest advice.`;
 
 export async function generateChatResponse(
     messages: ChatMessage[],
@@ -390,4 +383,38 @@ export async function resolveActivityCoords(
         };
     }
     return activity;
+}
+
+// ── Generate a single activity for "Add a place" ─────────────────────────────
+
+const SINGLE_ACTIVITY_SYSTEM = `You are a travel planner. Given a place name and destination city, return a single JSON activity object with no markdown fences and no extra text. Use real coordinates for the place.`;
+
+export async function generateSingleActivity(
+    placeName: string,
+    destination: string
+): Promise<Activity> {
+    const schema = `{ "place_name": "...", "place_details": "...", "place_image_url": "", "geo_coordinates": { "latitude": 0.0, "longitude": 0.0 }, "place_address": "...", "ticket_pricing": "...", "time_travel_each_location": "...", "best_time_to_visit": "..." }`;
+
+    try {
+        const raw = await callGemini(
+            SINGLE_ACTIVITY_SYSTEM,
+            `Place: ${placeName}\nDestination: ${destination}\nReturn ONLY this JSON filled in with real data: ${schema}`
+        );
+        const cleaned = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/m, "").trim();
+        const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+        const activity: Activity = JSON.parse(jsonMatch ? jsonMatch[0] : cleaned);
+        return resolveActivityCoords(activity, destination);
+    } catch {
+        const coords = await geocodePlace(placeName, destination);
+        return {
+            place_name: placeName,
+            place_details: `A noteworthy place in ${destination}.`,
+            place_image_url: "",
+            geo_coordinates: { latitude: coords?.lat ?? 0, longitude: coords?.lng ?? 0 },
+            place_address: destination,
+            ticket_pricing: "Check on site",
+            time_travel_each_location: "1-2 hours",
+            best_time_to_visit: "Morning",
+        };
+    }
 }
