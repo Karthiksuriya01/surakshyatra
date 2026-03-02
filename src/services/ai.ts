@@ -8,10 +8,7 @@ const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY as string;
 
 // Model fallback chain — tries each until one responds successfully
 const MODELS = [
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-pro",
-    "gemini-pro",
+    "gemini-3-flash-preview"
 ] as const;
 
 // ── Core helper ───────────────────────────────────────────────────────────────
