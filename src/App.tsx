@@ -1,14 +1,13 @@
 import { useState } from "react";
 import type { SourcePlace, GroupSize } from "./types/trip";
-import type { Destination, Place } from "./constants/data";
+import type { Destination } from "./constants/data";
 import Source from "./pages/Source";
 import DestinationPage from "./pages/Destination";
 import GroupDuration from "./pages/GroupDuration";
 import Preferences from "./pages/Preferences";
 import Itinerary from "./pages/Itinerary";
-import PlaceDetail from "./pages/PlaceDetail";
 
-type Screen = "source" | "dest" | "groupDuration" | "prefs" | "itinerary" | "detail";
+type Screen = "source" | "dest" | "groupDuration" | "prefs" | "itinerary";
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>("source");
@@ -17,7 +16,6 @@ export default function App() {
   const [groupSize, setGroupSize] = useState<GroupSize>("solo");
   const [days, setDays] = useState(3);
   const [prefs, setPrefs] = useState<string[]>([]);
-  const [place, setPlace] = useState<Place | null>(null);
 
   if (screen === "source")
     return <Source onNext={(s) => { setSource(s); setScreen("dest"); }} />;
@@ -32,10 +30,7 @@ export default function App() {
     return <Preferences dest={dest} groupSize={groupSize} days={days} onNext={(p) => { setPrefs(p); setScreen("itinerary"); }} onBack={() => setScreen("groupDuration")} />;
 
   if (screen === "itinerary" && dest)
-    return <Itinerary dest={dest} prefs={prefs} days={days} groupSize={groupSize} source={source} onPlace={(p) => { setPlace(p); setScreen("detail"); }} onBack={() => setScreen("prefs")} />;
-
-  if (screen === "detail" && place)
-    return <PlaceDetail place={place} onBack={() => setScreen("itinerary")} />;
+    return <Itinerary dest={dest} prefs={prefs} days={days} groupSize={groupSize} source={source} onBack={() => setScreen("prefs")} />;
 
   return <Source onNext={(s) => { setSource(s); setScreen("dest"); }} />;
 }
