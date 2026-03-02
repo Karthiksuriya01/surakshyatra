@@ -2,7 +2,7 @@
 // Dynamically injects the Maps bootstrap script once and resolves when
 // the `places` library is ready. Safe to call concurrently / on HMR.
 
-const API_KEY = "AIzaSyCrP_tgcUj7KxdJpLhm0nzeMwbpmg0cecM";
+const API_KEY = import.meta.env.VITE_GOOGLE_MAPS_KEY as string;
 
 let _promise: Promise<void> | null = null;
 

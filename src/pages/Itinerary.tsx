@@ -3,8 +3,9 @@ import { Wrap, Logo, BackBtn } from "../components/ui";
 import { generateItinerary, sc } from "../utils/helpers";
 import type { DayItinerary } from "../utils/helpers";
 import type { Destination, Place } from "../constants/data";
-import type { SourcePlace } from "./S0_Source";
-import type { GroupSize } from "./S2b_GroupDuration";
+import type { SourcePlace, GroupSize } from "../types/trip";
+
+const GROUP_EMOJI: Record<string, string> = { solo: "🧍", couple: "👫", family: "👨‍👩‍👧‍👦", friends: "👯" };
 
 interface Props {
     dest: Destination;
@@ -16,18 +17,13 @@ interface Props {
     onBack: () => void;
 }
 
-const GROUP_EMOJI: Record<string, string> = { solo: "🧍", couple: "👫", family: "👨‍👩‍👧‍👦", friends: "👯" };
-
-export default function S4_Itinerary({ dest, prefs, days, groupSize, source, onPlace, onBack }: Props) {
+export default function Itinerary({ dest, prefs, days, groupSize, source, onPlace, onBack }: Props) {
     const [activeDay, setActiveDay] = useState(1);
     const [loading, setLoading] = useState(true);
     const [itinerary, setItinerary] = useState<DayItinerary[]>([]);
 
     useEffect(() => {
-        const t = setTimeout(() => {
-            setItinerary(generateItinerary(days, prefs));
-            setLoading(false);
-        }, 1800);
+        const t = setTimeout(() => { setItinerary(generateItinerary(days, prefs)); setLoading(false); }, 1800);
         return () => clearTimeout(t);
     }, []);
 
@@ -57,7 +53,6 @@ export default function S4_Itinerary({ dest, prefs, days, groupSize, source, onP
                     <BackBtn onClick={onBack} />
                     <Logo small />
                 </div>
-
                 <div style={{ marginBottom: 20 }}>
                     <h1 style={{ color: "#fff", fontSize: 22, fontWeight: 700, letterSpacing: "-0.02em" }}>{dest.main}</h1>
                     {source && (
@@ -87,9 +82,7 @@ export default function S4_Itinerary({ dest, prefs, days, groupSize, source, onP
 
                 <div style={{ display: "flex", gap: 8, marginBottom: 22, overflowX: "auto", paddingBottom: 4 }}>
                     {itinerary.map((d) => (
-                        <button key={d.day} className={`day-tab ${d.day === activeDay ? "active" : "inactive"}`} onClick={() => setActiveDay(d.day)}>
-                            Day {d.day}
-                        </button>
+                        <button key={d.day} className={`day-tab ${d.day === activeDay ? "active" : "inactive"}`} onClick={() => setActiveDay(d.day)}>Day {d.day}</button>
                     ))}
                 </div>
 
