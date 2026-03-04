@@ -1,74 +1,113 @@
 // ── SurakshYatra AI Service ───────────────────────────────────────────────────
-// Uses axios to call the Gemini REST API directly (Google AI Studio key).
-// API key is read from .env (VITE_GEMINI_API_KEY).
+// Three dedicated Gemini keys — one per concern — so each has its own quota.
+// Itinerary key also handles place insights + chat (same knowledge domain).
 
 import axios from "axios";
-import type { TripPlan, PlaceDetails, ChatMessage, Activity } from "../types/trip";
+import type { TripPlan, PlaceDetails, ChatMessage, Activity, SafetyScore } from "../types/trip";
 
-const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY as string;
 const MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_KEY as string;
+const ML_API_URL = (import.meta.env.VITE_ML_API_URL as string) || "http://localhost:8000";
 
-const MODELS = ["gemini-3-flash-preview"] as const;
+// Fallback chain: specific key → legacy VITE_GEMINI_API_KEY → empty
+const _fallback = (import.meta.env.VITE_GEMINI_API_KEY as string) ?? "";
+const KEYS = {
+    /** AI 1 — Trip preference suggestions (light, fast) */
+    preferences: (import.meta.env.VITE_GEMINI_KEY_PREFERENCES as string) || _fallback,
+    /** AI 2 — Itinerary generation + place insights + chat (travel knowledge) */
+    itinerary: (import.meta.env.VITE_GEMINI_KEY_ITINERARY as string) || _fallback,
+    /** AI 3 — Safety ML parameters + risk explanation (safety knowledge) */
+    safety: (import.meta.env.VITE_GEMINI_KEY_SAFETY as string) || _fallback,
+} as const;
 
-// ── Core helper ───────────────────────────────────────────────────────────────
+const MODEL = "gemini-2.5-flash";
+
+// ── Shared core ───────────────────────────────────────────────────────────────
 
 function sleep(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
 
-async function callGemini(systemPrompt: string, userMessage: string, maxRetries = 3): Promise<string> {
+async function callGeminiWith(
+    keyName: keyof typeof KEYS,
+    systemPrompt: string,
+    userMessage: string,
+    opts: { maxRetries?: number; temperature?: number } = {}
+): Promise<string> {
+    const { maxRetries = 3, temperature = 0.7 } = opts;
+    const apiKey = KEYS[keyName];
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${apiKey}`;
     let lastError: unknown;
 
-    for (const model of MODELS) {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
-
-        for (let attempt = 0; attempt <= maxRetries; attempt++) {
-            try {
-                if (attempt > 0) {
-                    const delay = Math.min(2000 * Math.pow(2, attempt - 1), 16000);
-                    console.log(`⏳ [AI] Retry ${attempt}/${maxRetries} after ${delay}ms…`);
-                    await sleep(delay);
-                }
-                console.log(`🤖 [AI] Trying ${model} (attempt ${attempt + 1})…`);
-
-                const { data } = await axios.post(
-                    url,
-                    {
-                        systemInstruction: { parts: [{ text: systemPrompt }] },
-                        contents: [{ role: "user", parts: [{ text: userMessage }] }],
-                        generationConfig: { temperature: 0.7 },
-                    },
-                    { headers: { "Content-Type": "application/json" } }
-                );
-
-                const raw: string = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-                console.log(`✅ [AI] Response from ${model}:`, raw.slice(0, 200));
-                return raw;
-            } catch (err: any) {
-                const status = err?.response?.status;
-                if (status === 429 && attempt < maxRetries) {
-                    console.warn(`⚠️ [AI] Rate limited (429), will retry…`);
-                    lastError = err;
-                    continue;
-                }
-                console.warn(`⚠️ [AI] ${model} failed (status ${status}):`, err?.message);
-                lastError = err;
-                break;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+            if (attempt > 0) {
+                const delay = Math.min(2000 * Math.pow(2, attempt - 1), 16000);
+                console.log(`⏳ [AI:${keyName}] Retry ${attempt}/${maxRetries} after ${delay}ms…`);
+                await sleep(delay);
             }
+            console.log(`🤖 [AI:${keyName}] Calling ${MODEL} (temp=${temperature}, attempt ${attempt + 1})…`);
+
+            const { data } = await axios.post(
+                url,
+                {
+                    systemInstruction: { parts: [{ text: systemPrompt }] },
+                    contents: [{ role: "user", parts: [{ text: userMessage }] }],
+                    generationConfig: { temperature },
+                },
+                { headers: { "Content-Type": "application/json" } }
+            );
+
+            const raw: string = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+            console.log(`✅ [AI:${keyName}] Response:`, raw.slice(0, 200));
+            return raw;
+        } catch (err: any) {
+            const status = err?.response?.status;
+            if (status === 429 && attempt < maxRetries) {
+                console.warn(`⚠️ [AI:${keyName}] Rate limited (429), will retry…`);
+                lastError = err;
+                continue;
+            }
+            console.warn(`⚠️ [AI:${keyName}] Failed (status ${status}):`, err?.message);
+            lastError = err;
+            break;
         }
     }
 
-    throw lastError ?? new Error("All Gemini models failed");
+    throw lastError ?? new Error(`[AI:${keyName}] All retries failed`);
 }
+
+// ── Named callers ────────────────────────────────────────────────────────────
+// JSON callers use temperature=0.1 for deterministic output.
+// Creative callers (insights, chat) use temperature=0.75.
+
+/** AI 1 — Trip preference suggestions (JSON, strict) */
+const callPreferencesAI = (sys: string, msg: string) =>
+    callGeminiWith("preferences", sys, msg, { temperature: 0.1 });
+
+/** AI 2 — Itinerary generation (JSON, strict) */
+const callItineraryAI = (sys: string, msg: string) =>
+    callGeminiWith("itinerary", sys, msg, { temperature: 0.2 });
+
+/** AI 2 (same key) — Place insights + chat (creative, conversational) */
+const callPlacesAI = (sys: string, msg: string) =>
+    callGeminiWith("itinerary", sys, msg, { temperature: 0.75 });
+
+/** AI 3 — Safety ML params (JSON, strict) + explanation (semi-creative) */
+const callSafetyAI = (sys: string, msg: string, creative = false) =>
+    callGeminiWith("safety", sys, msg, { temperature: creative ? 0.6 : 0.1 });
+
 
 // ── Preference suggestions ────────────────────────────────────────────────────
 
-const PREF_SYSTEM_PROMPT = `You are SurakshYatra, an AI travel safety planner.
-Given a destination and group type, return a JSON object with the most relevant travel preference IDs for that destination, chosen only from:
+const PREF_SYSTEM_PROMPT = `You are a destination intelligence engine for SurakshYatra, a travel safety app.
+Given a destination city and traveller group type, rank travel preference categories by relevance for that specific destination.
+Be accurate — a beach category is irrelevant for landlocked mountain cities. Spiritual is high-weight for temple/pilgrimage cities.
+You MUST use ONLY these exact IDs (no others, no free text):
   popular, museum, nature, foodie, history, shopping, adventure, beach, nightlife, wellness, spiritual, trekking
 
-"suggested" = top 3 IDs to pre-select. "all" = full ranked list (all 12).
-
-Respond strictly with:
-{ "suggested": ["id1","id2","id3"], "all": ["id1","id2",...] }`;
+Rules:
+- "suggested": exactly 3 IDs most relevant to the destination+group combination
+- "all": all 12 IDs ranked by relevance (most relevant first)
+- Output ONLY raw JSON — no markdown fences, no explanation, no trailing text
+- Respond with exactly: {"suggested":["id1","id2","id3"],"all":[...all 12 ids...]}`;
 
 export interface PrefSuggestion {
     suggested: string[];
@@ -93,7 +132,7 @@ export async function fetchPrefSuggestions(
         } catch { /* ignore corrupt cache */ }
     }
 
-    const raw = await callGemini(
+    const raw = await callPreferencesAI(
         PREF_SYSTEM_PROMPT,
         `Destination: ${destination}\nGroup: ${groupSize}`
     );
@@ -113,7 +152,19 @@ export async function fetchPrefSuggestions(
 
 // ── Trip plan generation ──────────────────────────────────────────────────────
 
-const TRIP_PLAN_SYSTEM = `You are SurakshYatra, a professional AI travel planner. Generate a detailed travel itinerary in strict JSON format with no markdown or code fences. Use only real place names, real addresses, and realistic coordinates. If you don't have exact image URLs use empty string "". Return only valid JSON.`;
+const TRIP_PLAN_SYSTEM = `You are SurakshYatra’s itinerary engine — a world-class AI travel planner.
+Your job is to produce a realistic, safety-aware, day-by-day travel itinerary as PURE JSON (no markdown, no prose).
+
+Strict rules:
+1. Use ONLY real, well-known places for the given destination. Never invent place names.
+2. Provide accurate geo_coordinates (latitude/longitude) for every activity. If unsure, use the city centre coords.
+3. place_address must be a real, Google Maps-searchable address string.
+4. place_details: 2-3 sentences — what the place is, why it’s worth visiting, one safety or practical tip.
+5. Distribute activities to avoid geographic clustering — plan routes that make logistical sense per day.
+6. ticket_pricing: give realistic price ranges in local currency where known (e.g. ₹150, Free, $5–10).
+7. best_time_to_visit: give a specific time window (e.g. “8–11 AM”, “After 6 PM”).
+8. Leave place_image_url as empty string "".
+9. Output ONLY the JSON object — nothing before or after it.`;
 
 const TRIP_PLAN_SCHEMA = `
 Output Schema (return ONLY this JSON, no markdown, no explanation):
@@ -177,7 +228,7 @@ Use real place names in ${destination}.
 ${TRIP_PLAN_SCHEMA}`;
 
     try {
-        const raw = await callGemini(TRIP_PLAN_SYSTEM, userMsg);
+        const raw = await callItineraryAI(TRIP_PLAN_SYSTEM, userMsg);
         const cleaned = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/m, "").trim();
 
         let parsed: { trip_plan: TripPlan };
@@ -302,9 +353,16 @@ export function getPlacePhotoUrl(photoName: string, maxWidth = 600): string {
     return `https://places.googleapis.com/v1/${photoName}/media?maxWidthPx=${maxWidth}&key=${MAPS_API_KEY}`;
 }
 
-// ── AI traveller insights (bullet points) ────────────────────────────────────
+// ── AI traveller insights ────────────────────────────────────────────────────
 
-const INSIGHTS_SYSTEM = `You are a knowledgeable travel guide specialising in safety, culture and practical tips. Given a place name and its details, return exactly 4-5 concise bullet points for a first-time traveller. Cover: what to expect, local tips, safety considerations, best photo spots or timing, and cultural etiquette. Format each bullet EXACTLY like: "• [tip]" — one per line. No headings, no extra text, just the bullet lines.`;
+const INSIGHTS_SYSTEM = `You are a local travel expert writing practical tips for SurakshYatra travelers.
+Given the place name, destination city, and a brief description, write EXACTLY 5 bullet points.
+Each bullet must cover one of: what to expect on arrival, the must-see highlight, a safety/awareness tip, best time or photo spot, local custom / dress code.
+Rules:
+- Start every bullet with the • character followed by a space
+- One sentence per bullet. Be specific to THIS place, not generic travel advice.
+- No headings, no bold, no markdown, no numbered list. Just 5 • lines.
+- Mention the actual place name in at least 2 bullets for specificity.`;
 
 export async function generatePlaceInsights(
     placeName: string,
@@ -316,7 +374,7 @@ export async function generatePlaceInsights(
     if (cached) return cached;
 
     try {
-        const raw = await callGemini(
+        const raw = await callPlacesAI(
             INSIGHTS_SYSTEM,
             `Place: ${placeName}\nDestination: ${destination}\nDetails: ${placeDetails}`
         );
@@ -330,7 +388,15 @@ export async function generatePlaceInsights(
 
 // ── Chat assistant ────────────────────────────────────────────────────────────
 
-const CHAT_SYSTEM = `You are SurakshYatra, an expert AI travel safety guide and trip planner. You have access to the user's current trip context below. Answer the user's questions about their trip, local safety, weather, cultural tips, nearby attractions, food, transport, or anything else travel-related. Be concise, helpful and friendly. If asked about safety, give practical, honest advice.`;
+const CHAT_SYSTEM = `You are SurakshYatra’s AI trip assistant — a friendly, knowledgeable travel safety guide.
+You have full context of the user’s planned trip (destination, days, group type, itinerary).
+Your role:
+- Answer questions about the trip, local safety, transport, food, weather, culture, costs, and logistics.
+- If asked about safety: give honest, practical, specific advice — not generic warnings.
+- Stay on-topic to travel. If the user asks something unrelated, gently redirect.
+- Reply in 2–4 sentences max unless more detail is explicitly requested.
+- Be warm, concise, and confident. Never say "I don’t know" — give your best informed answer.
+- Use the trip context to personalise answers (e.g. reference actual places in their itinerary).`;
 
 export async function generateChatResponse(
     messages: ChatMessage[],
@@ -342,7 +408,7 @@ export async function generateChatResponse(
 
     const userMsg = `Trip Context:\n${tripContext}\n\nConversation:\n${conversation}\n\nSurakshYatra:`;
     try {
-        const raw = await callGemini(CHAT_SYSTEM, userMsg);
+        const raw = await callPlacesAI(CHAT_SYSTEM, userMsg);
         return raw.replace(/^SurakshYatra:\s*/i, "").trim();
     } catch {
         return "I'm having trouble connecting right now. Please try again in a moment.";
@@ -396,7 +462,7 @@ export async function generateSingleActivity(
     const schema = `{ "place_name": "...", "place_details": "...", "place_image_url": "", "geo_coordinates": { "latitude": 0.0, "longitude": 0.0 }, "place_address": "...", "ticket_pricing": "...", "time_travel_each_location": "...", "best_time_to_visit": "..." }`;
 
     try {
-        const raw = await callGemini(
+        const raw = await callItineraryAI(
             SINGLE_ACTIVITY_SYSTEM,
             `Place: ${placeName}\nDestination: ${destination}\nReturn ONLY this JSON filled in with real data: ${schema}`
         );
@@ -416,5 +482,175 @@ export async function generateSingleActivity(
             time_travel_each_location: "1-2 hours",
             best_time_to_visit: "Morning",
         };
+    }
+}
+
+// ── Safety Score — Gemini → FastAPI ML pipeline ───────────────────────────────
+
+const SAFETY_GEMINI_PROMPT = (
+    place_name: string,
+    place_category: string,
+    location_type: string,
+    traveler_type: string,
+    preferred_time: string
+) => `You are a travel safety analyst AI. Given a place, generate realistic safety-related parameters for an ML model.
+
+Place: ${place_name}
+Category: ${place_category}
+Location type: ${location_type}
+Traveler type: ${traveler_type}
+Preferred visit time: ${preferred_time}
+
+Return ONLY a valid JSON object with these exact fields (no explanation, no markdown):
+{
+  "population_density": <0.0-1.0>,
+  "crime_rate": <0.0-1.0>,
+  "lighting_conditions": <0.0-1.0>,
+  "security_personnel": <0.0-1.0>,
+  "emergency_services_proximity": <0.0-1.0>,
+  "local_transport_accessibility": <0.0-1.0>,
+  "infrastructure_quality": <0.0-1.0>,
+  "natural_disaster_risk": <0.0-1.0>,
+  "political_stability": <0.0-1.0>,
+  "health_facilities_access": <0.0-1.0>,
+  "social_unrest_indicators": <0.0-1.0>,
+  "tourist_attraction": <0.0-1.0>,
+  "historical_incidents": <0.0-1.0>,
+  "crowd_level": <0.0-1.0>,
+  "local_awareness_score": <0.0-1.0>,
+  "community_engagement": <0.0-1.0>,
+  "cultural_sensitivity": <0.0-1.0>,
+  "communication_infrastructure": <0.0-1.0>,
+  "environmental_hazards": <0.0-1.0>,
+  "public_perception_score": <0.0-1.0>,
+  "economic_stability": <0.0-1.0>,
+  "regulatory_compliance": <0.0-1.0>,
+  "local_support_network": <0.0-1.0>,
+  "protest": <0 or 1>,
+  "environmental_alert": <0 or 1>,
+  "negative_review_ratio": <0.0-1.0>,
+  "extreme_weather_alert": <0 or 1>,
+  "temperature_c": <number>,
+  "rainfall_mm": <number>,
+  "wind_speed_kmh": <number>,
+  "air_quality_index": <0-500>,
+  "vip_security_flag": <0 or 1>,
+  "event_crowd_signal": <0 or 1>,
+  "flood_alert": <0 or 1>,
+  "wildfire_alert": <0 or 1>,
+  "news_risk_keywords": <0 or 1>,
+  "cultural_disruption": <0 or 1>,
+  "place_rating": <1.0-5.0>,
+  "hospital_distance_km": <number>
+}`;
+
+export async function fetchSafetyScore(
+    placeName: string,
+    placeCategory: string,
+    locationType: string,
+    travelerType: string,
+    preferredTime: string
+): Promise<SafetyScore | null> {
+    const cacheKey = `safety:${placeName.toLowerCase()}:${travelerType}:${preferredTime}`;
+    const cached = sessionStorage.getItem(cacheKey);
+    if (cached) {
+        try { return JSON.parse(cached); } catch { /* ignore */ }
+    }
+
+    try {
+        // ── Step 1: Ask Gemini to generate 38 ML parameters ──────────────────
+        const raw = await callSafetyAI(
+            "You are a travel safety analyst. Return ONLY a valid JSON object, no markdown, no explanation.",
+            SAFETY_GEMINI_PROMPT(placeName, placeCategory, locationType, travelerType, preferredTime)
+        );
+        const cleaned = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/m, "").trim();
+        let geminiParams: Record<string, number | string>;
+        try {
+            geminiParams = JSON.parse(cleaned);
+        } catch {
+            const match = cleaned.match(/\{[\s\S]*\}/);
+            if (!match) throw new Error("Gemini returned invalid JSON for safety params");
+            geminiParams = JSON.parse(match[0]);
+        }
+
+        // ── Step 2: Send to FastAPI ML model ─────────────────────────────────
+        const payload = {
+            place_name: placeName,
+            place_category: placeCategory,
+            location_type: locationType,
+            traveler_type: travelerType,
+            preferred_time: preferredTime,
+            mobility: "walking",
+            weather_conditions: "clear",
+            ...geminiParams,
+        };
+
+        const res = await axios.post(`${ML_API_URL}/predict`, payload, {
+            headers: { "Content-Type": "application/json" },
+            timeout: 15000,
+        });
+
+        const result: SafetyScore = {
+            ...res.data,
+            gemini_params: geminiParams,
+        };
+
+        sessionStorage.setItem(cacheKey, JSON.stringify(result));
+        console.log(`🛡️ [Safety] ${placeName}: ${result.safety_level} (${result.safety_score})`);
+        return result;
+    } catch (err: any) {
+        console.warn(`⚠️ [Safety] Could not fetch safety score for "${placeName}":`, err?.message ?? err);
+        return null;
+    }
+}
+
+// ── Safety Explanation — Gemini explains WHY a place is risky ─────────────────
+
+const SAFETY_EXPLAIN_SYSTEM = `You are a travel safety analyst for SurakshYatra.
+Given a place name, its safety classification, and a set of risk parameter values, explain to a traveler WHY this place may be a concern.
+Rules:
+- Write EXACTLY 3 bullet points starting with •
+- Each bullet = one specific, factual risk reason tied to the actual parameter values given
+- Be honest but not alarmist. Mention the specific risk factor (e.g. high crime rate, seasonal flooding, poor lighting)
+- Do NOT give generic advice. Reference the place name in at least one bullet.
+- Do NOT suggest what to do — only explain the risk. End with what the traveler should know.
+- Plain sentences, no markdown, no headings. Just 3 • lines.`;
+
+export async function generateSafetyExplanation(
+    placeName: string,
+    safetyLevel: "Safe" | "Moderate" | "Risky",
+    geminiParams: Record<string, number | string>
+): Promise<string> {
+    if (safetyLevel === "Safe") return "";
+
+    const cacheKey = `safety-explain:${placeName.toLowerCase()}`;
+    const cached = sessionStorage.getItem(cacheKey);
+    if (cached) return cached;
+
+    // Build a concise description of the worst parameters
+    const riskFactors = Object.entries(geminiParams)
+        .filter(([key]) => ["crime_rate", "natural_disaster_risk", "social_unrest_indicators",
+            "environmental_hazards", "historical_incidents", "protest", "flood_alert",
+            "wildfire_alert", "extreme_weather_alert", "environmental_alert",
+            "news_risk_keywords", "negative_review_ratio", "lighting_conditions",
+            "security_personnel", "air_quality_index"].includes(key))
+        .map(([key, val]) => `${key}: ${val}`)
+        .join(", ");
+
+    const userMsg = `Place: ${placeName}
+Safety Level: ${safetyLevel}
+Risk parameters: ${riskFactors}
+
+Explain in 3 bullet points why this place might be ${safetyLevel.toLowerCase()} for travelers.`;
+
+    try {
+        const raw = await callSafetyAI(SAFETY_EXPLAIN_SYSTEM, userMsg, true);
+        const text = raw.trim();
+        sessionStorage.setItem(cacheKey, text);
+        return text;
+    } catch {
+        return safetyLevel === "Risky"
+            ? "• Exercise caution in this area due to elevated risk factors.\n• Check local advisories before visiting.\n• Avoid travelling alone, especially at night."
+            : "• Some safety concerns exist — stay aware of your surroundings.\n• Keep valuables secure and avoid isolated areas.\n• Follow local guidance and stay in well-populated zones.";
     }
 }

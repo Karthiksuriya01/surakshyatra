@@ -8,8 +8,10 @@ import {
     generateChatResponse,
     resolveActivityCoords,
     generateSingleActivity,
+    fetchSafetyScore,
+    generateSafetyExplanation,
 } from "../services/ai";
-import type { TripPlan, ItineraryDay, Activity, PlaceDetails, ChatMessage } from "../types/trip";
+import type { TripPlan, ItineraryDay, Activity, PlaceDetails, ChatMessage, SafetyScore } from "../types/trip";
 import type { Destination } from "../constants/data";
 import type { SourcePlace, GroupSize } from "../types/trip";
 
@@ -57,18 +59,56 @@ function DirectionsButton({ placeName, address }: { placeName: string; address: 
 
 // ── Place Detail Sheet ────────────────────────────────────────────────────────
 
+// ── Safety badge helper ───────────────────────────────────────────────────────
+
+const SAFETY_COLOR: Record<string, string> = {
+    Safe: "#10b981",
+    Moderate: "#f59e0b",
+    Risky: "#ef4444",
+};
+const SAFETY_BG: Record<string, string> = {
+    Safe: "rgba(16,185,129,0.12)",
+    Moderate: "rgba(245,158,11,0.12)",
+    Risky: "rgba(239,68,68,0.12)",
+};
+
+// Injected once — CSS keyframe for the blinking dot
+if (typeof document !== "undefined" && !document.getElementById("safety-blink-style")) {
+    const s = document.createElement("style");
+    s.id = "safety-blink-style";
+    s.textContent = `
+        @keyframes safePulse {
+            0%, 100% { opacity: 1; box-shadow: 0 0 0 0 currentColor; }
+            50% { opacity: 0.55; box-shadow: 0 0 6px 2px currentColor; }
+        }
+        .safety-dot {
+            display: inline-block;
+            width: 7px; height: 7px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            animation: safePulse 1.6s ease-in-out infinite;
+        }
+    `;
+    document.head.appendChild(s);
+}
+
 interface PlaceSheetProps {
     activity: Activity;
     destination: string;
+    groupSize: string;
     onClose: () => void;
 }
 
-function PlaceSheet({ activity, destination, onClose }: PlaceSheetProps) {
+function PlaceSheet({ activity, destination, groupSize, onClose }: PlaceSheetProps) {
     const [details, setDetails] = useState<PlaceDetails | null>(null);
     const [insights, setInsights] = useState<string>("");
     const [photoUrl, setPhotoUrl] = useState<string>("");
     const [loadingDetails, setLoadingDetails] = useState(true);
     const [loadingInsights, setLoadingInsights] = useState(true);
+    const [safetyScore, setSafetyScore] = useState<SafetyScore | null>(null);
+    const [safetyLoading, setSafetyLoading] = useState(true);
+    const [safetyExplain, setSafetyExplain] = useState<string>("");
+    const [explainLoading, setExplainLoading] = useState(false);
 
     useEffect(() => {
         // Prevent body scroll
@@ -93,6 +133,22 @@ function PlaceSheet({ activity, destination, onClose }: PlaceSheetProps) {
 
         generatePlaceInsights(activity.place_name, activity.place_details, destination)
             .then((text) => { if (!cancelled) { setInsights(text); setLoadingInsights(false); } });
+
+        // ── Safety score ──
+        const placeCategory = "tourist_spot";
+        const locationType = "urban";
+        const preferredTime = "morning";
+        fetchSafetyScore(activity.place_name, placeCategory, locationType, groupSize, preferredTime)
+            .then((score) => {
+                if (cancelled) return;
+                setSafetyScore(score);
+                setSafetyLoading(false);
+                if (score && score.safety_level !== "Safe" && score.gemini_params) {
+                    setExplainLoading(true);
+                    generateSafetyExplanation(activity.place_name, score.safety_level, score.gemini_params)
+                        .then((text) => { if (!cancelled) { setSafetyExplain(text); setExplainLoading(false); } });
+                }
+            });
 
         return () => { cancelled = true; };
     }, [activity.place_name]);
@@ -171,6 +227,74 @@ function PlaceSheet({ activity, destination, onClose }: PlaceSheetProps) {
                             ))}
                         </div>
                     )}
+
+                    {/* ── Safety Score Section ── */}
+                    <div style={{ marginBottom: 16, background: safetyScore ? SAFETY_BG[safetyScore.safety_level] : "rgba(255,255,255,0.03)", border: `1px solid ${safetyScore ? SAFETY_COLOR[safetyScore.safety_level] + "44" : "rgba(255,255,255,0.07)"}`, borderRadius: 16, padding: "14px 16px" }}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                <span style={{ fontSize: 16 }}>🛡️</span>
+                                <span style={{ color: safetyScore ? SAFETY_COLOR[safetyScore.safety_level] : "rgba(255,255,255,0.6)", fontWeight: 700, fontSize: 15 }}>Safety Analysis</span>
+                                <span className="ai-badge">ML + Gemini</span>
+                            </div>
+                        </div>
+
+                        {safetyLoading ? (
+                            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                <div className="skeleton" style={{ height: 14, width: 100 }} />
+                                <div className="skeleton" style={{ height: 8, width: "100%", borderRadius: 4, marginTop: 4 }} />
+                                <div className="skeleton" style={{ height: 8, width: "100%", borderRadius: 4 }} />
+                                <div className="skeleton" style={{ height: 8, width: "100%", borderRadius: 4 }} />
+                            </div>
+                        ) : safetyScore ? (
+                            <>
+                                {/* Blinking level badge */}
+                                <div style={{ display: "inline-flex", alignItems: "center", gap: 8, background: SAFETY_BG[safetyScore.safety_level], border: `1px solid ${SAFETY_COLOR[safetyScore.safety_level]}55`, borderRadius: 20, padding: "6px 14px", marginBottom: 12 }}>
+                                    <span className="safety-dot" style={{ background: SAFETY_COLOR[safetyScore.safety_level], color: SAFETY_COLOR[safetyScore.safety_level], width: 9, height: 9 }} />
+                                    <span style={{ color: SAFETY_COLOR[safetyScore.safety_level], fontWeight: 700, fontSize: 14, letterSpacing: "0.03em" }}>{safetyScore.safety_level}</span>
+                                </div>
+
+                                {/* Confidence bars */}
+                                {([
+                                    { label: "Safe", val: safetyScore.confidence.safe, color: SAFETY_COLOR.Safe },
+                                    { label: "Moderate", val: safetyScore.confidence.moderate, color: SAFETY_COLOR.Moderate },
+                                    { label: "Risky", val: safetyScore.confidence.risky, color: SAFETY_COLOR.Risky },
+                                ] as const).map(({ label, val, color }) => (
+                                    <div key={label} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
+                                        <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, width: 56, flexShrink: 0 }}>{label}</div>
+                                        <div style={{ flex: 1, height: 5, background: "rgba(255,255,255,0.07)", borderRadius: 3, overflow: "hidden" }}>
+                                            <div style={{ height: "100%", width: `${val * 100}%`, background: color, borderRadius: 3, transition: "width 0.8s ease" }} />
+                                        </div>
+                                        <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 11, width: 32, textAlign: "right" }}>{Math.round(val * 100)}%</div>
+                                    </div>
+                                ))}
+
+                                {/* Safety explanation for Risky/Moderate */}
+                                {safetyScore.safety_level !== "Safe" && (
+                                    <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${SAFETY_COLOR[safetyScore.safety_level]}22` }}>
+                                        <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Why this matters</div>
+                                        {explainLoading ? (
+                                            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                                                <div className="skeleton" style={{ height: 12, width: "100%" }} />
+                                                <div className="skeleton" style={{ height: 12, width: "90%" }} />
+                                                <div className="skeleton" style={{ height: 12, width: "80%" }} />
+                                            </div>
+                                        ) : (
+                                            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                                {safetyExplain.split("\n").filter(l => l.trim()).map((line, i) => (
+                                                    <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                                                        <span style={{ color: SAFETY_COLOR[safetyScore.safety_level], fontSize: 13, flexShrink: 0, lineHeight: 1.6 }}>•</span>
+                                                        <span style={{ color: "rgba(255,255,255,0.65)", fontSize: 12, lineHeight: 1.6 }}>{line.replace(/^[•\-*]\s*/, "")}</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </>
+                        ) : (
+                            <p style={{ color: "rgba(255,255,255,0.3)", fontSize: 12, fontStyle: "italic" }}>Safety score unavailable — ensure the ML server is running.</p>
+                        )}
+                    </div>
 
                     {/* ── AI Review Summary (Places API powered) ── */}
                     <div className="review-summary" style={{ marginBottom: 16 }}>
@@ -619,6 +743,7 @@ Itinerary: ${tripPlan.itinerary.map((d) =>
                                     index={i}
                                     activity={activity}
                                     destination={dest.main}
+                                    groupSize={groupSize ?? "solo"}
                                     onClick={() => setSelectedActivity(activity)}
                                 />
                             ))}
@@ -646,7 +771,7 @@ Itinerary: ${tripPlan.itinerary.map((d) =>
 
                 {/* ── Footer note ── */}
                 <div style={{ marginTop: 28, padding: "13px", background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 14, textAlign: "center" }}>
-                    <p style={{ color: "rgba(255,255,255,0.25)", fontSize: 11 }}>🛡️ AI-generated itinerary · Tap any place to explore details · Safety scores coming soon</p>
+                    <p style={{ color: "rgba(255,255,255,0.25)", fontSize: 11 }}>🛡️ AI-generated itinerary · Tap any place for safety scores & details</p>
                 </div>
             </div>
 
@@ -655,6 +780,7 @@ Itinerary: ${tripPlan.itinerary.map((d) =>
                 <PlaceSheet
                     activity={selectedActivity}
                     destination={dest.main}
+                    groupSize={groupSize ?? "solo"}
                     onClose={() => setSelectedActivity(null)}
                 />
             )}
@@ -677,15 +803,18 @@ Itinerary: ${tripPlan.itinerary.map((d) =>
 // ── Activity Card ─────────────────────────────────────────────────────────────
 
 function ActivityCard({
-    activity, index, destination = "", onClick
+    activity, index, destination = "", groupSize = "solo", onClick
 }: {
     activity: Activity;
     index: number;
     destination?: string;
+    groupSize?: string;
     onClick: () => void;
 }) {
     const [cardPhoto, setCardPhoto] = useState<string>("");
     const [photoLoaded, setPhotoLoaded] = useState(false);
+    const [cardSafety, setCardSafety] = useState<SafetyScore | null>(null);
+    const [cardSafetyLoading, setCardSafetyLoading] = useState(true);
 
     // Eagerly fetch a small thumbnail from Places API (or fall back to AI url)
     useEffect(() => {
@@ -705,6 +834,14 @@ function ActivityCard({
             .catch(() => { });
         return () => { cancelled = true; };
     }, [activity.place_name]);
+
+    // Fetch safety score for each card
+    useEffect(() => {
+        let cancelled = false;
+        fetchSafetyScore(activity.place_name, "tourist_spot", "urban", groupSize, "morning")
+            .then((score) => { if (!cancelled) { setCardSafety(score); setCardSafetyLoading(false); } });
+        return () => { cancelled = true; };
+    }, [activity.place_name, groupSize]);
 
     return (
         <div className="activity-card" style={{ animationDelay: `${index * 0.08}s` }} onClick={onClick}>
@@ -733,7 +870,17 @@ function ActivityCard({
             {/* Content */}
             <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8, marginBottom: 5 }}>
-                    <div style={{ color: "#fff", fontWeight: 600, fontSize: 14, lineHeight: 1.3 }}>{activity.place_name}</div>
+                    <div style={{ flex: 1 }}>
+                        <div style={{ color: "#fff", fontWeight: 600, fontSize: 14, lineHeight: 1.3, marginBottom: 4 }}>{activity.place_name}</div>
+                        {cardSafetyLoading ? (
+                            <div className="skeleton" style={{ height: 16, width: 66, borderRadius: 10 }} />
+                        ) : cardSafety ? (
+                            <div style={{ display: "inline-flex", alignItems: "center", gap: 5, background: SAFETY_BG[cardSafety.safety_level], border: `1px solid ${SAFETY_COLOR[cardSafety.safety_level]}44`, borderRadius: 10, padding: "3px 8px" }}>
+                                <span className="safety-dot" style={{ background: SAFETY_COLOR[cardSafety.safety_level], color: SAFETY_COLOR[cardSafety.safety_level] }} />
+                                <span style={{ color: SAFETY_COLOR[cardSafety.safety_level], fontSize: 11, fontWeight: 700 }}>{cardSafety.safety_level}</span>
+                            </div>
+                        ) : null}
+                    </div>
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 2 }}>
                         <path d="m9 18 6-6-6-6" />
                     </svg>

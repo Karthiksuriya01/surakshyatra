@@ -71,3 +71,18 @@ export interface ChatMessage {
     role: "user" | "assistant";
     text: string;
 }
+
+// ── Safety score (ML model result) ────────────────────────────────────────────
+
+export interface SafetyScore {
+    place_name: string;
+    safety_level: "Safe" | "Moderate" | "Risky";
+    safety_score: number;       // 0-100
+    confidence: {
+        safe: number;
+        moderate: number;
+        risky: number;
+    };
+    gemini_params?: Record<string, number | string>; // raw ML features for explanation
+}
+

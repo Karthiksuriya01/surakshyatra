@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SurakshYatra — Safety API Tester</title>
+<style>
+  :root {
+    --bg: #0d0f14;
+    --surface: #161a24;
+    --border: rgba(255,255,255,0.07);
+    --accent: #7c3aed;
+    --accent2: #c084fc;
+    --safe: #10b981;
+    --moderate: #f59e0b;
+    --risky: #ef4444;
+    --text: #e2e8f0;
+    --muted: rgba(255,255,255,0.35);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, sans-serif; min-height: 100vh; }
+
+  /* ── Header ── */
+  header {
+    background: linear-gradient(135deg, #1a0836 0%, #0d0f14 60%);
+    border-bottom: 1px solid var(--border);
+    padding: 20px 28px;
+    display: flex; align-items: center; gap: 14px;
+  }
+  header .logo { font-size: 24px; }
+  header h1 { font-size: 18px; font-weight: 700; background: linear-gradient(135deg, #a78bfa, #c084fc); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  header p { font-size: 12px; color: var(--muted); }
+  .server-status { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; transition: background 0.3s; }
+  .dot.online { background: var(--safe); box-shadow: 0 0 8px var(--safe); }
+
+  /* ── Layout ── */
+  .container { display: grid; grid-template-columns: 1fr 360px; gap: 20px; padding: 24px 28px; max-width: 1300px; margin: 0 auto; }
+  @media (max-width: 900px) { .container { grid-template-columns: 1fr; } }
+
+  /* ── Card ── */
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 20px; }
+  .card-title { font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 16px; }
+
+  /* ── Form ── */
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .form-group { display: flex; flex-direction: column; gap: 6px; }
+  .form-group label { font-size: 11px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  input, select {
+    background: rgba(255,255,255,0.04); border: 1px solid var(--border);
+    border-radius: 8px; color: var(--text); padding: 8px 12px; font-size: 13px;
+    outline: none; transition: border-color 0.2s;
+  }
+  input:focus, select:focus { border-color: var(--accent); }
+  input[type=range] { -webkit-appearance: none; height: 4px; border-radius: 2px; background: rgba(255,255,255,0.1); padding: 0; cursor: pointer; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--accent2); cursor: pointer; }
+
+  /* ── Slider row ── */
+  .slider-row { display: flex; align-items: center; gap: 10px; }
+  .slider-row input[type=range] { flex: 1; }
+  .slider-val { min-width: 34px; text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text); }
+
+  /* ── Section dividers ── */
+  .section { margin-top: 20px; }
+  .section-label {
+    font-size: 11px; font-weight: 700; color: var(--accent2);
+    text-transform: uppercase; letter-spacing: 0.07em;
+    padding: 6px 0; border-bottom: 1px solid var(--border); margin-bottom: 14px;
+  }
+
+  /* ── Buttons ── */
+  .btn-row { display: flex; gap: 10px; margin-top: 20px; }
+  button {
+    border: none; border-radius: 10px; cursor: pointer;
+    font-size: 14px; font-weight: 600; padding: 11px 22px; transition: all 0.2s;
+  }
+  .btn-primary {
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    color: #fff; flex: 1;
+  }
+  .btn-primary:hover { filter: brightness(1.15); transform: translateY(-1px); }
+  .btn-primary:active { transform: none; }
+  .btn-secondary { background: rgba(255,255,255,0.06); color: var(--text); border: 1px solid var(--border); }
+  .btn-secondary:hover { background: rgba(255,255,255,0.1); }
+
+  /* ── Result panel ── */
+  #result-panel { position: sticky; top: 24px; }
+  .result-box { min-height: 200px; position: relative; }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    border-radius: 20px; padding: 6px 16px; font-size: 14px; font-weight: 700;
+    margin-bottom: 14px;
+  }
+  .badge.Safe    { background: rgba(16,185,129,0.15); color: var(--safe);     border: 1px solid rgba(16,185,129,0.3); }
+  .badge.Moderate{ background: rgba(245,158,11,0.15); color: var(--moderate); border: 1px solid rgba(245,158,11,0.3); }
+  .badge.Risky   { background: rgba(239,68,68,0.15);  color: var(--risky);    border: 1px solid rgba(239,68,68,0.3); }
+
+  .score-num { font-size: 48px; font-weight: 800; line-height: 1; }
+  .score-sub { font-size: 11px; color: var(--muted); margin-bottom: 16px; }
+
+  .bar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .bar-label { font-size: 11px; color: var(--muted); width: 58px; flex-shrink: 0; }
+  .bar-track { flex: 1; height: 6px; background: rgba(255,255,255,0.06); border-radius: 3px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 3px; transition: width 1s cubic-bezier(.4,0,.2,1); }
+  .bar-pct { font-size: 11px; color: var(--muted); width: 34px; text-align: right; }
+
+  .raw-json {
+    background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px; font-family: 'Monaco', monospace; font-size: 11px;
+    color: #a0c4ff; overflow-x: auto; margin-top: 14px; max-height: 200px; overflow-y: auto;
+    white-space: pre-wrap;
+  }
+
+  .status-msg { font-size: 13px; color: var(--muted); }
+  .error-msg { color: var(--risky); font-size: 13px; }
+  .loading { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; }
+  .spinner { width: 18px; height: 18px; border: 2px solid rgba(255,255,255,0.1); border-top-color: var(--accent2); border-radius: 50%; animation: spin 0.7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .preset-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+  .preset-btn {
+    background: rgba(255,255,255,0.05); border: 1px solid var(--border); border-radius: 8px;
+    color: var(--text); font-size: 11px; font-weight: 600; padding: 5px 10px; cursor: pointer;
+  }
+  .preset-btn:hover { border-color: var(--accent2); color: var(--accent2); }
+
+  .toggle-row { display: flex; gap: 8px; align-items: center; }
+  .toggle { cursor: pointer; }
+  select option { background: #161a24; }
+</style>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet" />
+</head>
+<body>
+
+<header>
+  <span class="logo">🛡️</span>
+  <div>
+    <h1>Safety API Tester</h1>
+    <p>SurakshYatra · FastAPI ML Model at <span id="server-url">http://localhost:8000</span></p>
+  </div>
+  <div class="server-status">
+    <div class="dot" id="status-dot"></div>
+    <span id="status-text">Checking…</span>
+  </div>
+</header>
+
+<div class="container">
+  <!-- ── Left: Form ── -->
+  <div>
+    <div class="card">
+      <div class="card-title">📍 Place & Context</div>
+
+      <!-- Presets -->
+      <div style="margin-bottom:14px">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em">Quick presets</div>
+        <div class="preset-row">
+          <button class="preset-btn" onclick="applyPreset('beach')">🏖️ Beach Town</button>
+          <button class="preset-btn" onclick="applyPreset('mountain')">⛰️ Mountain Trek</button>
+          <button class="preset-btn" onclick="applyPreset('urban')">🏙️ Urban Market</button>
+          <button class="preset-btn" onclick="applyPreset('festival')">🎪 Festival Zone</button>
+          <button class="preset-btn" onclick="applyPreset('risky')">🔴 High Risk</button>
+        </div>
+      </div>
+
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Place Name</label>
+          <input type="text" id="place_name" value="Eravikulam National Park" />
+        </div>
+        <div class="form-group">
+          <label>Place Category</label>
+          <select id="place_category">
+            <option value="tourist_spot">Tourist Spot</option>
+            <option value="historical_site">Historical Site</option>
+            <option value="market">Market</option>
+            <option value="mountain">Mountain</option>
+            <option value="beach">Beach</option>
+            <option value="forest">Forest</option>
+            <option value="temple">Temple</option>
+            <option value="urban_area">Urban Area</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Location Type</label>
+          <select id="location_type">
+            <option value="urban">Urban</option>
+            <option value="suburban">Suburban</option>
+            <option value="rural">Rural</option>
+            <option value="remote">Remote</option>
+            <option value="forest">Forest</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Traveler Type</label>
+          <select id="traveler_type">
+            <option value="Solo">Solo</option>
+            <option value="Couple">Couple</option>
+            <option value="Family">Family</option>
+            <option value="Group">Group</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Preferred Time</label>
+          <select id="preferred_time">
+            <option value="Morning">Morning</option>
+            <option value="Afternoon">Afternoon</option>
+            <option value="Evening">Evening</option>
+            <option value="Night">Night</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Weather Conditions</label>
+          <select id="weather_conditions">
+            <option value="clear">Clear</option>
+            <option value="cloudy">Cloudy</option>
+            <option value="rainy">Rainy</option>
+            <option value="stormy">Stormy</option>
+            <option value="foggy">Foggy</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Numeric sliders -->
+      <div class="section">
+        <div class="section-label">🔒 Security & Social</div>
+        <div id="sliders-security"></div>
+      </div>
+      <div class="section">
+        <div class="section-label">🌍 Environment & Hazards</div>
+        <div id="sliders-env"></div>
+      </div>
+      <div class="section">
+        <div class="section-label">⚠️ Alert Flags (0 = Off, 1 = On)</div>
+        <div id="sliders-alerts"></div>
+      </div>
+      <div class="section">
+        <div class="section-label">🌡️ Weather & Infrastructure</div>
+        <div id="sliders-weather"></div>
+      </div>
+      <div class="section">
+        <div class="section-label">📊 Perception & Economy</div>
+        <div id="sliders-perception"></div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn-secondary" onclick="resetDefaults()">Reset</button>
+        <button class="btn-primary" onclick="runPredict()">⚡ Predict Safety Score</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Right: Result ── -->
+  <div id="result-panel">
+    <div class="card result-box">
+      <div class="card-title">📊 Prediction Result</div>
+      <div id="result-body">
+        <p class="status-msg">Fill in the parameters and click <strong>Predict</strong> to see the safety score.</p>
+      </div>
+    </div>
+
+    <!-- Server info -->
+    <div class="card" style="margin-top:16px">
+      <div class="card-title">🔌 API Server</div>
+      <div style="font-size:12px;color:var(--muted);line-height:1.8">
+        <div>Endpoint: <code style="color:#a0c4ff">POST /predict</code></div>
+        <div>Health: <code style="color:#a0c4ff">GET /health</code></div>
+        <div style="margin-top:8px">Start server with:</div>
+        <div class="raw-json" style="margin-top:4px;font-size:10px">uvicorn main:app --reload --port 8000</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = "http://localhost:8000";
+
+// ── Slider definitions ─────────────────────────────────────────────────────────
+
+const SLIDERS = {
+  "sliders-security": [
+    { id: "crime_rate",              label: "Crime Rate",        min: 0, max: 1, step: 0.01, val: 0.3  },
+    { id: "security_personnel",      label: "Security Personnel",min: 0, max: 1, step: 0.01, val: 0.5  },
+    { id: "political_stability",     label: "Political Stability",min:0, max: 1, step: 0.01, val: 0.7  },
+    { id: "social_unrest_indicators",label: "Social Unrest",    min: 0, max: 1, step: 0.01, val: 0.2  },
+    { id: "lighting_conditions",     label: "Lighting",          min: 0, max: 1, step: 0.01, val: 0.7  },
+    { id: "local_awareness_score",   label: "Local Awareness",   min: 0, max: 1, step: 0.01, val: 0.6  },
+    { id: "community_engagement",    label: "Community Eng.",    min: 0, max: 1, step: 0.01, val: 0.6  },
+    { id: "cultural_sensitivity",    label: "Cultural Sens.",    min: 0, max: 1, step: 0.01, val: 0.7  },
+  ],
+  "sliders-env": [
+    { id: "natural_disaster_risk",   label: "Nat. Disaster Risk",min:0, max: 1, step: 0.01, val: 0.2  },
+    { id: "environmental_hazards",   label: "Env. Hazards",      min: 0, max: 1, step: 0.01, val: 0.2  },
+    { id: "infrastructure_quality",  label: "Infrastructure",    min: 0, max: 1, step: 0.01, val: 0.6  },
+    { id: "health_facilities_access",label: "Health Access",     min: 0, max: 1, step: 0.01, val: 0.6  },
+    { id: "hospital_distance_km",    label: "Hospital Dist (km)",min:0, max: 50,  step: 0.5,  val: 5   },
+  ],
+  "sliders-alerts": [
+    { id: "protest",               label: "Protest",           min: 0, max: 1, step: 1, val: 0 },
+    { id: "environmental_alert",   label: "Env. Alert",        min: 0, max: 1, step: 1, val: 0 },
+    { id: "extreme_weather_alert", label: "Extreme Weather",   min: 0, max: 1, step: 1, val: 0 },
+    { id: "flood_alert",           label: "Flood Alert",       min: 0, max: 1, step: 1, val: 0 },
+    { id: "wildfire_alert",        label: "Wildfire Alert",    min: 0, max: 1, step: 1, val: 0 },
+    { id: "news_risk_keywords",    label: "News Risk",         min: 0, max: 1, step: 1, val: 0 },
+    { id: "event_crowd_signal",    label: "Event Crowd",       min: 0, max: 1, step: 1, val: 0 },
+    { id: "vip_security_flag",     label: "VIP Security",      min: 0, max: 1, step: 1, val: 0 },
+    { id: "cultural_disruption",   label: "Cultural Disruption",min:0, max: 1, step: 1, val: 0 },
+  ],
+  "sliders-weather": [
+    { id: "temperature_c",         label: "Temperature (°C)",  min: -20, max: 50,  step: 0.5, val: 25  },
+    { id: "rainfall_mm",           label: "Rainfall (mm)",     min: 0,   max: 300, step: 1,   val: 0   },
+    { id: "wind_speed_kmh",        label: "Wind Speed (km/h)", min: 0,   max: 120, step: 1,   val: 10  },
+    { id: "air_quality_index",     label: "Air Quality Index", min: 0,   max: 500, step: 1,   val: 50  },
+    { id: "communication_infrastructure", label: "Comm. Infra", min:0, max: 1, step: 0.01, val: 0.7 },
+  ],
+  "sliders-perception": [
+    { id: "public_perception_score",   label: "Public Perception", min: 0, max: 1, step: 0.01, val: 0.6 },
+    { id: "negative_review_ratio",     label: "Neg. Review Ratio", min: 0, max: 1, step: 0.01, val: 0.2 },
+    { id: "place_rating",              label: "Place Rating",      min: 1, max: 5, step: 0.1,  val: 4.0 },
+    { id: "economic_stability",        label: "Economic Stability",min: 0, max: 1, step: 0.01, val: 0.6 },
+    { id: "regulatory_compliance",     label: "Regulatory Comp.",  min: 0, max: 1, step: 0.01, val: 0.6 },
+    { id: "tourist_attraction",        label: "Tourist Appeal",    min: 0, max: 1, step: 0.01, val: 0.5 },
+    { id: "historical_incidents",      label: "Historical Incid.", min: 0, max: 1, step: 0.01, val: 0.3 },
+    { id: "population_density",        label: "Pop. Density (0-1)",min: 0, max: 1, step: 0.01, val: 0.5 },
+    { id: "emergency_services_proximity", label: "Emergency Prox.",min:0, max: 1, step: 0.01, val: 0.5 },
+    { id: "local_transport_accessibility", label: "Transport Access",min:0,max:1, step: 0.01, val: 0.6 },
+    { id: "local_support_network",     label: "Local Support",    min: 0, max: 1, step: 0.01, val: 0.6 },
+    { id: "crowd_level",               label: "Crowd Level",      min: 0, max: 1, step: 0.01, val: 0.5 },
+  ],
+};
+
+// ── Build sliders ─────────────────────────────────────────────────────────────
+
+function buildSliders() {
+  Object.entries(SLIDERS).forEach(([containerId, defs]) => {
+    const container = document.getElementById(containerId);
+    defs.forEach(d => {
+      const row = document.createElement("div");
+      row.className = "form-group";
+      row.style.marginBottom = "10px";
+      row.innerHTML = `
+        <label>${d.label}</label>
+        <div class="slider-row">
+          <input type="range" id="${d.id}" min="${d.min}" max="${d.max}" step="${d.step}" value="${d.val}"
+            oninput="document.getElementById('val_${d.id}').textContent=parseFloat(this.value).toFixed(d.step<0.1?2:0)" />
+          <span class="slider-val" id="val_${d.id}">${d.val}</span>
+        </div>`;
+      container.appendChild(row);
+
+      // Fix the closure
+      const input = row.querySelector("input");
+      const span = row.querySelector(".slider-val");
+      const decimals = d.step < 0.1 ? 2 : 0;
+      input.addEventListener("input", () => {
+        span.textContent = parseFloat(input.value).toFixed(decimals);
+      });
+    });
+  });
+}
+
+function getSliderValues() {
+  const vals = {};
+  Object.values(SLIDERS).flat().forEach(d => {
+    vals[d.id] = parseFloat(document.getElementById(d.id).value);
+  });
+  return vals;
+}
+
+function setSliderValue(id, val) {
+  const el = document.getElementById(id);
+  const span = document.getElementById("val_" + id);
+  if (!el) return;
+  el.value = val;
+  const defs = Object.values(SLIDERS).flat().find(d => d.id === id);
+  const decimals = defs && defs.step < 0.1 ? 2 : 0;
+  span.textContent = parseFloat(val).toFixed(decimals);
+}
+
+function resetDefaults() {
+  Object.values(SLIDERS).flat().forEach(d => setSliderValue(d.id, d.val));
+}
+
+// ── Presets ───────────────────────────────────────────────────────────────────
+
+const PRESETS = {
+  beach: {
+    place_name: "Varkala Beach", place_category: "beach", location_type: "suburban",
+    traveler_type: "Couple", preferred_time: "Morning", weather_conditions: "clear",
+    sliders: { crime_rate: 0.15, lighting_conditions: 0.8, flood_alert: 0, wildfire_alert: 0, place_rating: 4.5, public_perception_score: 0.85 }
+  },
+  mountain: {
+    place_name: "Munnar Hill Station", place_category: "mountain", location_type: "rural",
+    traveler_type: "Solo", preferred_time: "Morning", weather_conditions: "cloudy",
+    sliders: { natural_disaster_risk: 0.35, hospital_distance_km: 25, wind_speed_kmh: 40, extreme_weather_alert: 0, rainfall_mm: 80 }
+  },
+  urban: {
+    place_name: "Chandni Chowk Market", place_category: "market", location_type: "urban",
+    traveler_type: "Family", preferred_time: "Evening", weather_conditions: "clear",
+    sliders: { crime_rate: 0.45, crowd_level: 0.9, event_crowd_signal: 1, lighting_conditions: 0.55, air_quality_index: 180 }
+  },
+  festival: {
+    place_name: "Mysore Dasara Ground", place_category: "tourist_spot", location_type: "urban",
+    traveler_type: "Group", preferred_time: "Night", weather_conditions: "clear",
+    sliders: { event_crowd_signal: 1, vip_security_flag: 1, security_personnel: 0.9, crowd_level: 0.95, protest: 0 }
+  },
+  risky: {
+    place_name: "Remote Forest Trail", place_category: "forest", location_type: "remote",
+    traveler_type: "Solo", preferred_time: "Night", weather_conditions: "stormy",
+    sliders: {
+      crime_rate: 0.75, lighting_conditions: 0.1, security_personnel: 0.1,
+      natural_disaster_risk: 0.7, hospital_distance_km: 45, flood_alert: 1,
+      wildfire_alert: 1, extreme_weather_alert: 1, wind_speed_kmh: 90,
+      rainfall_mm: 250, negative_review_ratio: 0.7, social_unrest_indicators: 0.6
+    }
+  }
+};
+
+function applyPreset(name) {
+  const p = PRESETS[name];
+  if (!p) return;
+  document.getElementById("place_name").value = p.place_name;
+  document.getElementById("place_category").value = p.place_category;
+  document.getElementById("location_type").value = p.location_type;
+  document.getElementById("traveler_type").value = p.traveler_type;
+  document.getElementById("preferred_time").value = p.preferred_time;
+  document.getElementById("weather_conditions").value = p.weather_conditions;
+  Object.entries(p.sliders).forEach(([id, val]) => setSliderValue(id, val));
+}
+
+// ── Predict ───────────────────────────────────────────────────────────────────
+
+async function runPredict() {
+  const body = document.getElementById("result-body");
+  body.innerHTML = `<div class="loading"><div class="spinner"></div>Calling /predict…</div>`;
+
+  const payload = {
+    place_name: document.getElementById("place_name").value || "Unknown Place",
+    place_category: document.getElementById("place_category").value,
+    location_type: document.getElementById("location_type").value,
+    traveler_type: document.getElementById("traveler_type").value,
+    preferred_time: document.getElementById("preferred_time").value,
+    weather_conditions: document.getElementById("weather_conditions").value,
+    mobility: "walking",
+    ...getSliderValues(),
+  };
+
+  try {
+    const res = await fetch(`${API}/predict`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      const txt = await res.text();
+      body.innerHTML = `<p class="error-msg">❌ Server error ${res.status}: ${txt}</p>`;
+      return;
+    }
+
+    const data = await res.json();
+    renderResult(data, payload);
+  } catch (e) {
+    body.innerHTML = `<p class="error-msg">❌ ${e.message}<br><small style="color:var(--muted)">Is the FastAPI server running?<br><code>uvicorn main:app --reload --port 8000</code></small></p>`;
+  }
+}
+
+function renderResult(data, payload) {
+  const levelColors = { Safe: "#10b981", Moderate: "#f59e0b", Risky: "#ef4444" };
+  const levelEmoji  = { Safe: "🟢", Moderate: "🟡", Risky: "🔴" };
+  const color = levelColors[data.safety_level] || "#888";
+  const conf = data.confidence || {};
+
+  const safeBar     = Math.round((conf.safe || 0) * 100);
+  const modBar      = Math.round((conf.moderate || 0) * 100);
+  const riskyBar    = Math.round((conf.risky || 0) * 100);
+
+  document.getElementById("result-body").innerHTML = `
+    <div class="badge ${data.safety_level}">${levelEmoji[data.safety_level]} ${data.safety_level}</div>
+    <div class="score-num" style="color:${color}">${Math.round(data.safety_score)}</div>
+    <div class="score-sub">Safety Score / 100 &nbsp;·&nbsp; ${data.place_name}</div>
+
+    <div style="margin:16px 0">
+      <div class="bar-row">
+        <span class="bar-label">Safe</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${safeBar}%;background:#10b981"></div></div>
+        <span class="bar-pct">${safeBar}%</span>
+      </div>
+      <div class="bar-row">
+        <span class="bar-label">Moderate</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${modBar}%;background:#f59e0b"></div></div>
+        <span class="bar-pct">${modBar}%</span>
+      </div>
+      <div class="bar-row">
+        <span class="bar-label">Risky</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${riskyBar}%;background:#ef4444"></div></div>
+        <span class="bar-pct">${riskyBar}%</span>
+      </div>
+    </div>
+
+    <details>
+      <summary style="cursor:pointer;font-size:12px;color:var(--muted);user-select:none">▶ Raw JSON response</summary>
+      <div class="raw-json">${JSON.stringify(data, null, 2)}</div>
+    </details>
+  `;
+}
+
+// ── Health check ─────────────────────────────────────────────────────────────
+
+async function checkHealth() {
+  const dot  = document.getElementById("status-dot");
+  const text = document.getElementById("status-text");
+  try {
+    const res = await fetch(`${API}/health`, { signal: AbortSignal.timeout(3000) });
+    const data = await res.json();
+    if (data.model_ready) {
+      dot.className = "dot online";
+      text.textContent = "ML model ready";
+    } else {
+      dot.className = "dot";
+      text.textContent = "Server up, training…";
+    }
+  } catch {
+    dot.className = "dot";
+    text.textContent = "Server offline";
+  }
+}
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+
+buildSliders();
+checkHealth();
+setInterval(checkHealth, 5000);
+</script>
+</body>
+</html>
