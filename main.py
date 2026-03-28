@@ -12,7 +12,12 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from sklearn.ensemble import RandomForestClassifier
+import joblib
 import os
+
+# ── Model cache path (saves training time on restart) ─────────────────────────
+MODEL_CACHE_DIR = os.path.join(os.path.dirname(__file__), ".model_cache")
+MODEL_CACHE_PATH = os.path.join(MODEL_CACHE_DIR, "safety_model.pkl")
 
 app = FastAPI(title="SurakshYatra Safety Score API")
 
@@ -63,16 +68,31 @@ CATEGORICAL_COLS = [
 ]
 
 
-# ── Train model on startup ────────────────────────────────────────────────────
+# ── Train model on startup (with joblib cache) ───────────────────────────────
 @app.on_event("startup")
 def train_model():
     global model, encoders, safety_label_encoder, json_input_cols
 
-    # Dataset is in the 'dataset' subfolder
     dataset_path = os.getenv(
         "DATASET_PATH",
         os.path.join(os.path.dirname(__file__), "dataset", "travel_safety_dataset_large.csv")
     )
+
+    # ── Load from cache if available (skip retraining) ────────────────────────
+    if os.path.exists(MODEL_CACHE_PATH):
+        try:
+            cache = joblib.load(MODEL_CACHE_PATH)
+            model = cache["model"]
+            encoders = cache["encoders"]
+            safety_label_encoder = cache["safety_label_encoder"]
+            json_input_cols = cache["json_input_cols"]
+            print(f"✅ Model loaded from cache: {MODEL_CACHE_PATH}")
+            print(f"✅ Using {len(json_input_cols)} features (cached)")
+            return
+        except Exception as e:
+            print(f"⚠️ Cache load failed ({e}), retraining...")
+
+    # ── Train from scratch ────────────────────────────────────────────────────
     df = pd.read_csv(dataset_path)
     print(f"✅ Dataset loaded: {df.shape}")
 
@@ -82,7 +102,6 @@ def train_model():
     for col in list_cols:
         if col in df.columns:
             df[col] = df[col].apply(lambda x: 0 if pd.isna(x) or x == "[]" or str(x).strip() == "" else 1)
-
 
     # Encode categoricals
     for col in CATEGORICAL_COLS:
@@ -96,7 +115,6 @@ def train_model():
     # Auto-detect the scale and normalize to 0-100 for consistent binning.
     score_max = df['safety_score'].max()
     if score_max <= 1.0:
-        # Scale is 0.0–1.0 → convert to 0–100
         df['safety_score_norm'] = df['safety_score'] * 100
         print(f"📊 safety_score scale: 0–1 (max={score_max:.3f}), normalizing to 0–100")
     else:
@@ -113,7 +131,6 @@ def train_model():
     dist = df['safety_label_text'].value_counts()
     print(f"📊 Label distribution — Safe: {dist.get('Safe',0)}, Moderate: {dist.get('Moderate',0)}, Risky: {dist.get('Risky',0)}")
 
-
     # Only use features present in the CSV
     json_input_cols = [col for col in ALL_FEATURES if col in df.columns]
     print(f"✅ Using {len(json_input_cols)} features: {json_input_cols}")
@@ -127,6 +144,16 @@ def train_model():
 
     acc = model.score(X_test, y_test)
     print(f"✅ Model trained! Accuracy: {acc:.2%}")
+
+    # ── Save to cache ─────────────────────────────────────────────────────────
+    os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
+    joblib.dump({
+        "model": model,
+        "encoders": encoders,
+        "safety_label_encoder": safety_label_encoder,
+        "json_input_cols": json_input_cols,
+    }, MODEL_CACHE_PATH)
+    print(f"✅ Model saved to cache: {MODEL_CACHE_PATH}")
 
 
 # ── Request schema ────────────────────────────────────────────────────────────
@@ -198,6 +225,35 @@ def predict_safety(req: SafetyRequest):
     # Only keep columns the model was trained on
     df_input = df_input[[col for col in json_input_cols if col in df_input.columns]]
 
+    # ── Clamp numeric values to valid ranges ──────────────────────────────────
+    # Gemini may occasionally return out-of-range values (e.g. 1.5, -0.1)
+    # Binary flags (0/1) and continuous scores (0.0–1.0) are clamped separately.
+    binary_cols = [
+        "protest", "environmental_alert", "extreme_weather_alert",
+        "vip_security_flag", "event_crowd_signal", "flood_alert",
+        "wildfire_alert", "news_risk_keywords", "cultural_disruption",
+    ]
+    for col in df_input.columns:
+        if col in CATEGORICAL_COLS:
+            continue  # skip — will be label-encoded below
+        if col in binary_cols:
+            df_input[col] = df_input[col].clip(0, 1).round().astype(int)
+        elif col == "air_quality_index":
+            df_input[col] = df_input[col].clip(0, 500)
+        elif col == "temperature_c":
+            df_input[col] = df_input[col].clip(-60, 60)
+        elif col == "rainfall_mm":
+            df_input[col] = df_input[col].clip(0, None)
+        elif col == "wind_speed_kmh":
+            df_input[col] = df_input[col].clip(0, None)
+        elif col == "hospital_distance_km":
+            df_input[col] = df_input[col].clip(0, None)
+        elif col == "place_rating":
+            df_input[col] = df_input[col].clip(1.0, 5.0)
+        else:
+            # All other numeric features are expected in 0.0–1.0
+            df_input[col] = df_input[col].clip(0.0, 1.0)
+
     # Encode categoricals
     for col, encoder in encoders.items():
         if col in df_input.columns:
@@ -220,18 +276,24 @@ def predict_safety(req: SafetyRequest):
     safe_label = safety_label_encoder.transform(['Safe'])[0]
     moderate_label = safety_label_encoder.transform(['Moderate'])[0]
 
+    safe_prob = prob_map.get(safe_label, 0.0)
+    moderate_prob = prob_map.get(moderate_label, 0.0)
     risky_prob = prob_map.get(risky_label, 0.0)
-    safety_score = round((1 - risky_prob) * 100, 2)
+
+    # ── Weighted safety score ─────────────────────────────────────────────────
+    # Safe=100%, Moderate=65%, Risky=0%  — gives a richer signal than (1-risky)*100
+    safety_score = round((safe_prob * 1.0 + moderate_prob * 0.65 + risky_prob * 0.0) * 100, 2)
 
     return {
         "place_name": place_name,
         "safety_level": labels[prediction],
         "safety_score": safety_score,
         "confidence": {
-            "safe": round(prob_map.get(safe_label, 0.0), 2),
-            "moderate": round(prob_map.get(moderate_label, 0.0), 2),
+            "safe": round(safe_prob, 2),
+            "moderate": round(moderate_prob, 2),
             "risky": round(risky_prob, 2),
-        }
+        },
+        "disclaimer": "Safety scores are AI-estimated and not sourced from real-time databases.",
     }
 
 

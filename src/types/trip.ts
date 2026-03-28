@@ -77,12 +77,14 @@ export interface ChatMessage {
 export interface SafetyScore {
     place_name: string;
     safety_level: "Safe" | "Moderate" | "Risky";
-    safety_score: number;       // 0-100
+    safety_score: number;       // 0-100 (weighted: safe=100%, moderate=65%, risky=0%)
     confidence: {
         safe: number;
         moderate: number;
         risky: number;
     };
     gemini_params?: Record<string, number | string>; // raw ML features for explanation
+    disclaimer?: string;        // "AI-estimated — not sourced from real-time databases"
+    live_news_used?: boolean;   // true = grounded Google Search was used for news fields
 }
 

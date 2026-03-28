@@ -143,7 +143,8 @@ function PlaceSheet({ activity, destination, groupSize, onClose }: PlaceSheetPro
                 if (cancelled) return;
                 setSafetyScore(score);
                 setSafetyLoading(false);
-                if (score && score.safety_level !== "Safe" && score.gemini_params) {
+                // Generate explanation for ALL levels (positive for Safe, risk reasons for others)
+                if (score && score.gemini_params) {
                     setExplainLoading(true);
                     generateSafetyExplanation(activity.place_name, score.safety_level, score.gemini_params)
                         .then((text) => { if (!cancelled) { setSafetyExplain(text); setExplainLoading(false); } });
@@ -235,6 +236,13 @@ function PlaceSheet({ activity, destination, groupSize, onClose }: PlaceSheetPro
                                 <span style={{ fontSize: 16 }}>🛡️</span>
                                 <span style={{ color: safetyScore ? SAFETY_COLOR[safetyScore.safety_level] : "rgba(255,255,255,0.6)", fontWeight: 700, fontSize: 15 }}>Safety Analysis</span>
                                 <span className="ai-badge">ML + Gemini</span>
+                                {/* Live badge — shown when grounded Google Search was used */}
+                                {safetyScore?.live_news_used && (
+                                    <span style={{ background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.4)", borderRadius: 20, padding: "2px 8px", fontSize: 9, fontWeight: 700, color: "#ef4444", letterSpacing: "0.06em", display: "inline-flex", alignItems: "center", gap: 4 }}>
+                                        <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#ef4444", display: "inline-block", animation: "safePulse 1.2s ease-in-out infinite" }} />
+                                        LIVE
+                                    </span>
+                                )}
                             </div>
                         </div>
 
@@ -247,10 +255,17 @@ function PlaceSheet({ activity, destination, groupSize, onClose }: PlaceSheetPro
                             </div>
                         ) : safetyScore ? (
                             <>
-                                {/* Blinking level badge */}
-                                <div style={{ display: "inline-flex", alignItems: "center", gap: 8, background: SAFETY_BG[safetyScore.safety_level], border: `1px solid ${SAFETY_COLOR[safetyScore.safety_level]}55`, borderRadius: 20, padding: "6px 14px", marginBottom: 12 }}>
-                                    <span className="safety-dot" style={{ background: SAFETY_COLOR[safetyScore.safety_level], color: SAFETY_COLOR[safetyScore.safety_level], width: 9, height: 9 }} />
-                                    <span style={{ color: SAFETY_COLOR[safetyScore.safety_level], fontWeight: 700, fontSize: 14, letterSpacing: "0.03em" }}>{safetyScore.safety_level}</span>
+                                {/* Level badge + numeric score */}
+                                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                                    <div style={{ display: "inline-flex", alignItems: "center", gap: 8, background: SAFETY_BG[safetyScore.safety_level], border: `1px solid ${SAFETY_COLOR[safetyScore.safety_level]}55`, borderRadius: 20, padding: "6px 14px" }}>
+                                        <span className="safety-dot" style={{ background: SAFETY_COLOR[safetyScore.safety_level], color: SAFETY_COLOR[safetyScore.safety_level], width: 9, height: 9 }} />
+                                        <span style={{ color: SAFETY_COLOR[safetyScore.safety_level], fontWeight: 700, fontSize: 14, letterSpacing: "0.03em" }}>{safetyScore.safety_level}</span>
+                                    </div>
+                                    {/* Big score number */}
+                                    <div style={{ textAlign: "right" }}>
+                                        <div style={{ color: SAFETY_COLOR[safetyScore.safety_level], fontWeight: 800, fontSize: 26, lineHeight: 1 }}>{safetyScore.safety_score}</div>
+                                        <div style={{ color: "rgba(255,255,255,0.3)", fontSize: 9, fontWeight: 500, letterSpacing: "0.06em", textTransform: "uppercase" }}>/ 100</div>
+                                    </div>
                                 </div>
 
                                 {/* Confidence bars */}
@@ -268,28 +283,39 @@ function PlaceSheet({ activity, destination, groupSize, onClose }: PlaceSheetPro
                                     </div>
                                 ))}
 
-                                {/* Safety explanation for Risky/Moderate */}
-                                {safetyScore.safety_level !== "Safe" && (
-                                    <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${SAFETY_COLOR[safetyScore.safety_level]}22` }}>
-                                        <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Why this matters</div>
-                                        {explainLoading ? (
-                                            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                                                <div className="skeleton" style={{ height: 12, width: "100%" }} />
-                                                <div className="skeleton" style={{ height: 12, width: "90%" }} />
-                                                <div className="skeleton" style={{ height: 12, width: "80%" }} />
-                                            </div>
-                                        ) : (
-                                            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                                                {safetyExplain.split("\n").filter(l => l.trim()).map((line, i) => (
-                                                    <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-                                                        <span style={{ color: SAFETY_COLOR[safetyScore.safety_level], fontSize: 13, flexShrink: 0, lineHeight: 1.6 }}>•</span>
-                                                        <span style={{ color: "rgba(255,255,255,0.65)", fontSize: 12, lineHeight: 1.6 }}>{line.replace(/^[•\-*]\s*/, "")}</span>
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        )}
+                                {/* Why section — shown for ALL levels */}
+                                <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${SAFETY_COLOR[safetyScore.safety_level]}22` }}>
+                                    <div style={{ color: "rgba(255,255,255,0.35)", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
+                                        {safetyScore.safety_level === "Safe" ? "Why it's safe" : "Why this matters"}
                                     </div>
-                                )}
+                                    {explainLoading ? (
+                                        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                                            <div className="skeleton" style={{ height: 12, width: "100%" }} />
+                                            <div className="skeleton" style={{ height: 12, width: "90%" }} />
+                                            <div className="skeleton" style={{ height: 12, width: "80%" }} />
+                                        </div>
+                                    ) : safetyExplain ? (
+                                        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                            {safetyExplain.split("\n").filter(l => l.trim()).map((line, i) => (
+                                                <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                                                    <span style={{ color: SAFETY_COLOR[safetyScore.safety_level], fontSize: 13, flexShrink: 0, lineHeight: 1.6 }}>•</span>
+                                                    <span style={{ color: "rgba(255,255,255,0.65)", fontSize: 12, lineHeight: 1.6 }}>{line.replace(/^[•\-*]\s*/, "")}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <p style={{ color: "rgba(255,255,255,0.3)", fontSize: 12, fontStyle: "italic" }}>Generating explanation…</p>
+                                    )}
+                                </div>
+
+                                {/* Disclaimer */}
+                                <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 5 }}>
+                                    <span style={{ fontSize: 10 }}>ℹ️</span>
+                                    <span style={{ color: "rgba(255,255,255,0.2)", fontSize: 10, fontStyle: "italic" }}>
+                                        {safetyScore.disclaimer ?? "AI-estimated · not sourced from real-time databases"}
+                                        {safetyScore.live_news_used && " · News signals grounded via Google Search"}
+                                    </span>
+                                </div>
                             </>
                         ) : (
                             <p style={{ color: "rgba(255,255,255,0.3)", fontSize: 12, fontStyle: "italic" }}>Safety score unavailable — ensure the ML server is running.</p>

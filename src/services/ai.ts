@@ -19,11 +19,79 @@ const KEYS = {
     safety: (import.meta.env.VITE_GEMINI_KEY_SAFETY as string) || _fallback,
 } as const;
 
-const MODEL = "gemini-2.5-flash";
+const MODEL = "gemini-2.5-flash"; 
 
 // ── Shared core ───────────────────────────────────────────────────────────────
 
 function sleep(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
+
+// ── Persistent cache helpers (localStorage + 24h TTL) ────────────────────────────
+// localStorage survives page refreshes so users never re-fetch the same place.
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+function lsSet(key: string, value: unknown) {
+    try {
+        localStorage.setItem(key, JSON.stringify({ v: value, t: Date.now() }));
+    } catch { /* storage full — silently ignore */ }
+}
+
+function lsGet<T>(key: string): T | null {
+    try {
+        const raw = localStorage.getItem(key);
+        if (!raw) return null;
+        const { v, t } = JSON.parse(raw);
+        if (Date.now() - t > CACHE_TTL_MS) { localStorage.removeItem(key); return null; }
+        return v as T;
+    } catch { return null; }
+}
+
+// ── Per-key rate limiter (max 10 req/min, matching Gemini free tier) ───────────────
+// Queues calls and spaces them so we never exceed the RPM ceiling.
+class RateLimiter {
+    private queue: (() => void)[] = [];
+    private timestamps: number[] = [];
+    private readonly maxPerMinute: number;
+    private timer: ReturnType<typeof setTimeout> | null = null;
+
+    constructor(maxPerMinute = 10) { this.maxPerMinute = maxPerMinute; }
+
+    schedule<T>(fn: () => Promise<T>): Promise<T> {
+        return new Promise((resolve, reject) => {
+            this.queue.push(() => fn().then(resolve).catch(reject));
+            this.processQueue();
+        });
+    }
+
+    private processQueue() {
+        if (this.timer || this.queue.length === 0) return;
+
+        const now = Date.now();
+        // Drop timestamps older than 60s
+        this.timestamps = this.timestamps.filter(t => now - t < 60_000);
+
+        if (this.timestamps.length < this.maxPerMinute) {
+            // Slot available — fire immediately
+            const fn = this.queue.shift()!;
+            this.timestamps.push(Date.now());
+            fn();
+            // Check queue again after a short yield
+            this.timer = setTimeout(() => { this.timer = null; this.processQueue(); }, 100);
+        } else {
+            // All slots used — wait until the oldest slot frees up
+            const oldestSlot = this.timestamps[0];
+            const waitMs = 60_000 - (now - oldestSlot) + 100; // +100ms buffer
+            console.warn(`⏳ [RateLimiter] Quota full (${this.maxPerMinute} RPM). Waiting ${(waitMs / 1000).toFixed(1)}s…`);
+            this.timer = setTimeout(() => { this.timer = null; this.processQueue(); }, waitMs);
+        }
+    }
+}
+
+// One limiter per Gemini API key (each has its own independent quota)
+const rateLimiters: Record<string, RateLimiter> = {};
+function getLimiter(keyName: string): RateLimiter {
+    if (!rateLimiters[keyName]) rateLimiters[keyName] = new RateLimiter(10);
+    return rateLimiters[keyName];
+}
 
 async function callGeminiWith(
     keyName: keyof typeof KEYS,
@@ -36,42 +104,87 @@ async function callGeminiWith(
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${apiKey}`;
     let lastError: unknown;
 
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-        try {
-            if (attempt > 0) {
-                const delay = Math.min(2000 * Math.pow(2, attempt - 1), 16000);
-                console.log(`⏳ [AI:${keyName}] Retry ${attempt}/${maxRetries} after ${delay}ms…`);
-                await sleep(delay);
-            }
-            console.log(`🤖 [AI:${keyName}] Calling ${MODEL} (temp=${temperature}, attempt ${attempt + 1})…`);
+    // ── Schedule through per-key rate limiter ──────────────────────────────────
+    return getLimiter(keyName).schedule(async () => {
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            try {
+                if (attempt > 0) {
+                    const delay = Math.min(2000 * Math.pow(2, attempt - 1), 16000);
+                    console.log(`⏳ [AI:${keyName}] Retry ${attempt}/${maxRetries} after ${delay}ms…`);
+                    await sleep(delay);
+                }
+                console.log(`🤖 [AI:${keyName}] Calling ${MODEL} (temp=${temperature}, attempt ${attempt + 1})…`);
 
-            const { data } = await axios.post(
-                url,
-                {
-                    systemInstruction: { parts: [{ text: systemPrompt }] },
-                    contents: [{ role: "user", parts: [{ text: userMessage }] }],
-                    generationConfig: { temperature },
-                },
-                { headers: { "Content-Type": "application/json" } }
-            );
+                const { data } = await axios.post(
+                    url,
+                    {
+                        systemInstruction: { parts: [{ text: systemPrompt }] },
+                        contents: [{ role: "user", parts: [{ text: userMessage }] }],
+                        generationConfig: { temperature },
+                    },
+                    { headers: { "Content-Type": "application/json" } }
+                );
 
-            const raw: string = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-            console.log(`✅ [AI:${keyName}] Response:`, raw.slice(0, 200));
-            return raw;
-        } catch (err: any) {
-            const status = err?.response?.status;
-            if (status === 429 && attempt < maxRetries) {
-                console.warn(`⚠️ [AI:${keyName}] Rate limited (429), will retry…`);
+                const raw: string = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+                console.log(`✅ [AI:${keyName}] Response:`, raw.slice(0, 200));
+                return raw;
+            } catch (err: any) {
+                const status = err?.response?.status;
+                if (status === 429 && attempt < maxRetries) {
+                    const delay = Math.min(8000 * Math.pow(2, attempt), 60000); // longer backoff on 429
+                    console.warn(`⚠️ [AI:${keyName}] Rate limited (429), waiting ${delay / 1000}s…`);
+                    await sleep(delay);
+                    lastError = err;
+                    continue;
+                }
+                console.warn(`⚠️ [AI:${keyName}] Failed (status ${status}):`, err?.message);
                 lastError = err;
-                continue;
+                break;
             }
-            console.warn(`⚠️ [AI:${keyName}] Failed (status ${status}):`, err?.message);
-            lastError = err;
-            break;
         }
-    }
+        throw lastError ?? new Error(`[AI:${keyName}] All retries failed`);
+    });
+}
 
-    throw lastError ?? new Error(`[AI:${keyName}] All retries failed`);
+/**
+ * Same as callGeminiWith but enables Google Search grounding so Gemini
+ * can look up live news/events before answering. Used ONLY for the
+ * news-derived safety parameters where real-time accuracy matters.
+ */
+async function callGeminiWithGrounding(
+    keyName: keyof typeof KEYS,
+    systemPrompt: string,
+    userMessage: string
+): Promise<string> {
+    const apiKey = KEYS[keyName];
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${apiKey}`;
+
+    console.log(`🔍 [AI:${keyName}] Calling ${MODEL} WITH Google Search grounding…`);
+    try {
+        const { data } = await axios.post(
+            url,
+            {
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+                contents: [{ role: "user", parts: [{ text: userMessage }] }],
+                tools: [{ google_search: {} }],          // ← enables real-time search
+                generationConfig: { temperature: 0.1 }, // low temp = more factual
+            },
+            { headers: { "Content-Type": "application/json" } }
+        );
+
+        // The grounded response may have multiple parts (text + search metadata).
+        // We only need the text part that contains the JSON.
+        const parts: any[] = data?.candidates?.[0]?.content?.parts ?? [];
+        const raw: string = parts.find((p: any) => p.text)?.text ?? "";
+
+        const srcCount = data?.candidates?.[0]?.groundingMetadata?.groundingChunks?.length ?? 0;
+        console.log(`✅ [AI:${keyName}] Grounded response (${srcCount} sources):`, raw.slice(0, 200));
+        return raw;
+    } catch (err: any) {
+        console.warn(`⚠️ [AI:${keyName}] Grounding call failed, falling back to estimate:`, err?.message);
+        // Fall back to a non-grounded call so the safety score still works
+        return callGeminiWith(keyName, systemPrompt, userMessage, { temperature: 0.1 });
+    }
 }
 
 // ── Named callers ────────────────────────────────────────────────────────────
@@ -123,13 +236,10 @@ export async function fetchPrefSuggestions(
     groupSize: string
 ): Promise<PrefSuggestion> {
     const cacheKey = prefCacheKey(destination, groupSize);
-    const cached = sessionStorage.getItem(cacheKey);
+    const cached = lsGet<PrefSuggestion>(cacheKey);
     if (cached) {
-        try {
-            const parsed = JSON.parse(cached);
-            console.log("✅ [AI] Loaded from session cache:", parsed);
-            return parsed;
-        } catch { /* ignore corrupt cache */ }
+        console.log("✅ [AI] Loaded from cache:", cached);
+        return cached;
     }
 
     const raw = await callPreferencesAI(
@@ -146,7 +256,7 @@ export async function fetchPrefSuggestions(
     };
 
     console.log("📦 [AI] Final preference JSON:", result);
-    sessionStorage.setItem(cacheKey, JSON.stringify(result));
+    lsSet(cacheKey, result);
     return result;
 }
 
@@ -210,13 +320,10 @@ export async function generateTripPlan(
     prefs: string[]
 ): Promise<TripPlan> {
     const cacheKey = tripCacheKey(destination, origin, days, groupSize);
-    const cached = sessionStorage.getItem(cacheKey);
+    const cached = lsGet<TripPlan>(cacheKey);
     if (cached) {
-        try {
-            const parsed = JSON.parse(cached) as TripPlan;
-            console.log("✅ [AI] Trip plan from cache");
-            return parsed;
-        } catch { /* ignore */ }
+        console.log("✅ [AI] Trip plan from cache");
+        return cached;
     }
 
     const userMsg = `Generate a ${days}-day travel plan from ${origin} to ${destination}.
@@ -242,7 +349,7 @@ ${TRIP_PLAN_SCHEMA}`;
 
         const plan = parsed.trip_plan;
         console.log("📦 [AI] Trip plan generated:", plan.destination, plan.itinerary?.length, "days");
-        sessionStorage.setItem(cacheKey, JSON.stringify(plan));
+        lsSet(cacheKey, plan);
         return plan;
     } catch (err) {
         console.warn("⚠️ [AI] Using fallback trip plan due to error:", err);
@@ -370,7 +477,7 @@ export async function generatePlaceInsights(
     destination: string
 ): Promise<string> {
     const cacheKey = `insights:${placeName.toLowerCase()}:${destination.toLowerCase()}`;
-    const cached = sessionStorage.getItem(cacheKey);
+    const cached = lsGet<string>(cacheKey);
     if (cached) return cached;
 
     try {
@@ -379,7 +486,7 @@ export async function generatePlaceInsights(
             `Place: ${placeName}\nDestination: ${destination}\nDetails: ${placeDetails}`
         );
         const text = raw.trim();
-        sessionStorage.setItem(cacheKey, text);
+        lsSet(cacheKey, text);
         return text;
     } catch {
         return "• Great place for first-time visitors — arrive early to avoid crowds.\n• Carry small cash for entry fees and nearby vendors.\n• Respect local customs and dress codes at religious or heritage sites.\n• Best photos in the morning or golden hour near sunset.\n• Keep your belongings secure in busy tourist areas.";
@@ -487,13 +594,16 @@ export async function generateSingleActivity(
 
 // ── Safety Score — Gemini → FastAPI ML pipeline ───────────────────────────────
 
-const SAFETY_GEMINI_PROMPT = (
+// ── Call 1: Structural estimates (no grounding needed) ────────────────────────
+// These are fairly stable, knowledge-based fields that Gemini can estimate well
+// from its training data without needing live news.
+const SAFETY_STRUCTURAL_PROMPT = (
     place_name: string,
     place_category: string,
     location_type: string,
     traveler_type: string,
     preferred_time: string
-) => `You are a travel safety analyst AI. Given a place, generate realistic safety-related parameters for an ML model.
+) => `You are a travel safety analyst AI. Given a place, estimate stable safety parameters for an ML model.
 
 Place: ${place_name}
 Category: ${place_category}
@@ -513,10 +623,7 @@ Return ONLY a valid JSON object with these exact fields (no explanation, no mark
   "natural_disaster_risk": <0.0-1.0>,
   "political_stability": <0.0-1.0>,
   "health_facilities_access": <0.0-1.0>,
-  "social_unrest_indicators": <0.0-1.0>,
   "tourist_attraction": <0.0-1.0>,
-  "historical_incidents": <0.0-1.0>,
-  "crowd_level": <0.0-1.0>,
   "local_awareness_score": <0.0-1.0>,
   "community_engagement": <0.0-1.0>,
   "cultural_sensitivity": <0.0-1.0>,
@@ -526,23 +633,84 @@ Return ONLY a valid JSON object with these exact fields (no explanation, no mark
   "economic_stability": <0.0-1.0>,
   "regulatory_compliance": <0.0-1.0>,
   "local_support_network": <0.0-1.0>,
-  "protest": <0 or 1>,
-  "environmental_alert": <0 or 1>,
   "negative_review_ratio": <0.0-1.0>,
-  "extreme_weather_alert": <0 or 1>,
   "temperature_c": <number>,
   "rainfall_mm": <number>,
   "wind_speed_kmh": <number>,
   "air_quality_index": <0-500>,
-  "vip_security_flag": <0 or 1>,
-  "event_crowd_signal": <0 or 1>,
   "flood_alert": <0 or 1>,
   "wildfire_alert": <0 or 1>,
-  "news_risk_keywords": <0 or 1>,
-  "cultural_disruption": <0 or 1>,
+  "environmental_alert": <0 or 1>,
+  "extreme_weather_alert": <0 or 1>,
   "place_rating": <1.0-5.0>,
   "hospital_distance_km": <number>
 }`;
+
+// ── Call 2: News-derived signals (WITH Google Search grounding) ───────────────
+// These 7 fields change daily and need real live-news awareness.
+// Gemini will search the web before answering, using real current information.
+export interface GroundedNewsSignals {
+    protest: 0 | 1;
+    vip_security_flag: 0 | 1;
+    event_crowd_signal: 0 | 1;
+    news_risk_keywords: 0 | 1;
+    cultural_disruption: 0 | 1;
+    social_unrest_indicators: number;  // 0.0-1.0
+    crowd_level: number;               // 0.0-1.0
+    historical_incidents: number;      // 0.0-1.0
+    grounded: boolean;                 // true = real search was used
+}
+
+const GROUNDED_NEWS_SYSTEM = `You are a real-time travel safety analyst.
+Search for the latest news about the destination provided and assess current ground-level conditions.
+Return ONLY a valid JSON object — no markdown, no explanation.`;
+
+const GROUNDED_NEWS_PROMPT = (place_name: string, traveler_type: string) =>
+    `Search for the CURRENT news, events, and conditions at: "${place_name}".
+Traveler type: ${traveler_type}
+
+Based on what you find from the web RIGHT NOW, return ONLY this JSON:
+{
+  "protest": <1 if any protest/strike/bandh is currently reported near this location, else 0>,
+  "vip_security_flag": <1 if a VIP/VVIP/politician/celebrity visit is reported in the area, else 0>,
+  "event_crowd_signal": <1 if a festival, concert, pilgrimage rush, or major event is ongoing, else 0>,
+  "news_risk_keywords": <1 if any riot/stampede/violence/restriction/closure news found, else 0>,
+  "cultural_disruption": <1 if there is a reported cultural clash, religious tension, or community unrest, else 0>,
+  "social_unrest_indicators": <0.0-1.0 — overall score of social tension from news>,
+  "crowd_level": <0.0-1.0 — how crowded is this place right now based on news/events>,
+  "historical_incidents": <0.0-1.0 — recent safety incidents reported in the last few weeks>
+}
+
+If no relevant news is found for a field, default it to 0.
+Return ONLY the JSON object, nothing else.`;
+
+// ── Fetch grounded news signals for a destination ────────────────────────────
+export async function fetchGroundedNewsSignals(
+    placeName: string,
+    travelerType: string
+): Promise<GroundedNewsSignals> {
+    const fallback: GroundedNewsSignals = {
+        protest: 0, vip_security_flag: 0, event_crowd_signal: 0,
+        news_risk_keywords: 0, cultural_disruption: 0,
+        social_unrest_indicators: 0.1, crowd_level: 0.5, historical_incidents: 0.2,
+        grounded: false,
+    };
+
+    try {
+        const raw = await callGeminiWithGrounding(
+            "safety",
+            GROUNDED_NEWS_SYSTEM,
+            GROUNDED_NEWS_PROMPT(placeName, travelerType)
+        );
+        const cleaned = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/m, "").trim();
+        const parsed = JSON.parse(cleaned.match(/\{[\s\S]*\}/)?.[0] ?? cleaned);
+        console.log(`📰 [Safety] Grounded news signals for "${placeName}": protest=${parsed.protest}, crowd=${parsed.crowd_level}, vip=${parsed.vip_security_flag}`);
+        return { ...fallback, ...parsed, grounded: true };
+    } catch (err: any) {
+        console.warn(`⚠️ [Safety] Grounded news fetch failed for "${placeName}", using defaults:`, err?.message);
+        return fallback;
+    }
+}
 
 export async function fetchSafetyScore(
     placeName: string,
@@ -552,28 +720,54 @@ export async function fetchSafetyScore(
     preferredTime: string
 ): Promise<SafetyScore | null> {
     const cacheKey = `safety:${placeName.toLowerCase()}:${travelerType}:${preferredTime}`;
-    const cached = sessionStorage.getItem(cacheKey);
+    const cached = lsGet<SafetyScore>(cacheKey);
     if (cached) {
-        try { return JSON.parse(cached); } catch { /* ignore */ }
+        console.log(`✅ [Safety] Score for "${placeName}" from cache`);
+        return cached;
     }
 
     try {
-        // ── Step 1: Ask Gemini to generate 38 ML parameters ──────────────────
-        const raw = await callSafetyAI(
-            "You are a travel safety analyst. Return ONLY a valid JSON object, no markdown, no explanation.",
-            SAFETY_GEMINI_PROMPT(placeName, placeCategory, locationType, travelerType, preferredTime)
-        );
-        const cleaned = raw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/m, "").trim();
-        let geminiParams: Record<string, number | string>;
+        // ── Step 1a & 1b: Run structural estimate + live news search IN PARALLEL ─
+        // Structural: stable parameters Gemini knows from training (crime, infra, etc.)
+        // Grounded:   live news signals fetched via Google Search (protest, VIP, etc.)
+        console.log(`🛡️ [Safety] Starting parallel fetch for "${placeName}"…`);
+        const [structuralRaw, newsSignals] = await Promise.all([
+            callSafetyAI(
+                "You are a travel safety analyst. Return ONLY a valid JSON object, no markdown, no explanation.",
+                SAFETY_STRUCTURAL_PROMPT(placeName, placeCategory, locationType, travelerType, preferredTime)
+            ),
+            fetchGroundedNewsSignals(placeName, travelerType),
+        ]);
+
+        // Parse structural params
+        const cleanedStructural = structuralRaw.replace(/^```(?:json)?\s*/im, "").replace(/\s*```\s*$/m, "").trim();
+        let structuralParams: Record<string, number | string>;
         try {
-            geminiParams = JSON.parse(cleaned);
+            structuralParams = JSON.parse(cleanedStructural);
         } catch {
-            const match = cleaned.match(/\{[\s\S]*\}/);
-            if (!match) throw new Error("Gemini returned invalid JSON for safety params");
-            geminiParams = JSON.parse(match[0]);
+            const match = cleanedStructural.match(/\{[\s\S]*\}/);
+            if (!match) throw new Error("Gemini returned invalid JSON for structural params");
+            structuralParams = JSON.parse(match[0]);
         }
 
-        // ── Step 2: Send to FastAPI ML model ─────────────────────────────────
+        // ── Step 2: Merge — grounded news values OVERRIDE structural estimates ──
+        // This ensures live protest/VIP/crowd signals are always used when available.
+        const geminiParams: Record<string, number | string> = {
+            ...structuralParams,
+            // Override with live-searched values (or keep structural fallback if grounding failed)
+            protest: newsSignals.protest,
+            vip_security_flag: newsSignals.vip_security_flag,
+            event_crowd_signal: newsSignals.event_crowd_signal,
+            news_risk_keywords: newsSignals.news_risk_keywords,
+            cultural_disruption: newsSignals.cultural_disruption,
+            social_unrest_indicators: newsSignals.social_unrest_indicators,
+            crowd_level: newsSignals.crowd_level,
+            historical_incidents: newsSignals.historical_incidents,
+        };
+
+        console.log(`🔀 [Safety] Merged params — grounded=${newsSignals.grounded}, protest=${geminiParams.protest}, crowd=${geminiParams.crowd_level}`);
+
+        // ── Step 3: Send merged payload to FastAPI ML model ───────────────────
         const payload = {
             place_name: placeName,
             place_category: placeCategory,
@@ -593,10 +787,11 @@ export async function fetchSafetyScore(
         const result: SafetyScore = {
             ...res.data,
             gemini_params: geminiParams,
+            live_news_used: newsSignals.grounded,
         };
 
-        sessionStorage.setItem(cacheKey, JSON.stringify(result));
-        console.log(`🛡️ [Safety] ${placeName}: ${result.safety_level} (${result.safety_score})`);
+        lsSet(cacheKey, result);
+        console.log(`🛡️ [Safety] ${placeName}: ${result.safety_level} (${result.safety_score}) | live_news=${result.live_news_used}`);
         return result;
     } catch (err: any) {
         console.warn(`⚠️ [Safety] Could not fetch safety score for "${placeName}":`, err?.message ?? err);
@@ -607,50 +802,57 @@ export async function fetchSafetyScore(
 // ── Safety Explanation — Gemini explains WHY a place is risky ─────────────────
 
 const SAFETY_EXPLAIN_SYSTEM = `You are a travel safety analyst for SurakshYatra.
-Given a place name, its safety classification, and a set of risk parameter values, explain to a traveler WHY this place may be a concern.
+Given a place name, its safety classification, and a set of risk/safety parameter values, write exactly 3 bullet points about this place for a traveler.
+
 Rules:
 - Write EXACTLY 3 bullet points starting with •
-- Each bullet = one specific, factual risk reason tied to the actual parameter values given
-- Be honest but not alarmist. Mention the specific risk factor (e.g. high crime rate, seasonal flooding, poor lighting)
-- Do NOT give generic advice. Reference the place name in at least one bullet.
-- Do NOT suggest what to do — only explain the risk. End with what the traveler should know.
-- Plain sentences, no markdown, no headings. Just 3 • lines.`;
+- If safety_level is "Safe": highlight the specific POSITIVE safety factors (e.g. low crime, good lighting, strong security, easy hospital access). Be specific, not generic.
+- If safety_level is "Moderate" or "Risky": explain the specific risk factors tied to the parameter values.
+- Be honest but not alarmist. Mention the actual place name in at least one bullet.
+- Plain sentences only. No headings, no bold, no markdown. Just 3 • lines.`;
 
 export async function generateSafetyExplanation(
     placeName: string,
     safetyLevel: "Safe" | "Moderate" | "Risky",
     geminiParams: Record<string, number | string>
 ): Promise<string> {
-    if (safetyLevel === "Safe") return "";
-
-    const cacheKey = `safety-explain:${placeName.toLowerCase()}`;
-    const cached = sessionStorage.getItem(cacheKey);
+    const cacheKey = `safety-explain:${placeName.toLowerCase()}:${safetyLevel}`;
+    const cached = lsGet<string>(cacheKey);
     if (cached) return cached;
 
-    // Build a concise description of the worst parameters
-    const riskFactors = Object.entries(geminiParams)
-        .filter(([key]) => ["crime_rate", "natural_disaster_risk", "social_unrest_indicators",
+    // Pick the most relevant parameters for each level
+    const safetyKeys = safetyLevel === "Safe"
+        ? ["security_personnel", "lighting_conditions", "political_stability", "health_facilities_access",
+            "emergency_services_proximity", "regulatory_compliance", "community_engagement", "place_rating"]
+        : ["crime_rate", "natural_disaster_risk", "social_unrest_indicators",
             "environmental_hazards", "historical_incidents", "protest", "flood_alert",
             "wildfire_alert", "extreme_weather_alert", "environmental_alert",
             "news_risk_keywords", "negative_review_ratio", "lighting_conditions",
-            "security_personnel", "air_quality_index"].includes(key))
+            "security_personnel", "air_quality_index"];
+
+    const riskFactors = Object.entries(geminiParams)
+        .filter(([key]) => safetyKeys.includes(key))
         .map(([key, val]) => `${key}: ${val}`)
         .join(", ");
 
     const userMsg = `Place: ${placeName}
 Safety Level: ${safetyLevel}
-Risk parameters: ${riskFactors}
+Key parameters: ${riskFactors}
 
-Explain in 3 bullet points why this place might be ${safetyLevel.toLowerCase()} for travelers.`;
+Write 3 bullet points explaining why this place is rated ${safetyLevel} for travelers.`;
 
     try {
         const raw = await callSafetyAI(SAFETY_EXPLAIN_SYSTEM, userMsg, true);
         const text = raw.trim();
-        sessionStorage.setItem(cacheKey, text);
+        lsSet(cacheKey, text);
         return text;
     } catch {
+        if (safetyLevel === "Safe") {
+            return `• ${placeName} has low reported crime rates and visible security presence, making it well-suited for most traveler types.\n• Good lighting conditions and accessible emergency services contribute to a safe visit experience.\n• Strong community engagement and regulatory compliance help maintain a welcoming environment for tourists.`;
+        }
         return safetyLevel === "Risky"
             ? "• Exercise caution in this area due to elevated risk factors.\n• Check local advisories before visiting.\n• Avoid travelling alone, especially at night."
             : "• Some safety concerns exist — stay aware of your surroundings.\n• Keep valuables secure and avoid isolated areas.\n• Follow local guidance and stay in well-populated zones.";
     }
 }
+
